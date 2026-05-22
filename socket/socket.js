@@ -8,10 +8,11 @@ import QRCode from 'qrcode';
 
 /**
  * Binds the WebSocket Routing Engine to the main Express HTTP Server
- * Handles secure connection handshakes, pairing requests, auto-updating QR codes, and database persistence
- * Fully optimized using the classic ultra-stable Base64 cloud sync architecture supporting both QR & Pairing Codes
+ * Handles secure connection handshakes, pairing requests, and auto-updating QR codes
+ * Fully isolated to operate 100% in local volatile memory (In-Memory Architecture)
+ * ZERO database connections utilized for maximum execution speed and standalone deployment
  */
-export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT_CONNECTIONS, supabase) {
+export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT_CONNECTIONS) {
 
     io.on('connection', (socket) => {
         console.log(`[Socket Session] New frontend client linked: ${socket.id}`);
@@ -35,21 +36,6 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
             const botId = cleanNumber ? `${cleanNumber}:0` : null;
 
             try {
-                // 1. Structural Check: Ensure server capacity limit hasn't been crossed
-                const { data: activeSlots, error: countError } = await supabase
-                    .from('bot_accounts')
-                    .select('bot_id')
-                    .eq('server_id', SERVER_ID)
-                    .eq('status', 'active');
-
-                if (countError) throw countError;
-
-                if (activeSlots && activeSlots.length >= MAX_BOT_CONNECTIONS) {
-                    return socket.emit('error', { 
-                        message: `Server capacity reached! Maximum limit is ${MAX_BOT_CONNECTIONS} instances on this node. Please utilize another server link.` 
-                    });
-                }
-
                 // Safely clear old socket instance before opening a new stream pipeline
                 if (currentSock) {
                     try { 
@@ -58,10 +44,9 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                     } catch (_) {}
                 }
 
-                console.log(`[Socket Engine] Initializing WhatsApp instance via [${method}] for Node session`);
+                console.log(`[Socket Engine] Initializing WhatsApp instance via [${method}] for Standalone Node session`);
 
-                // 2. In-Memory Clean Authentication Mappings (Idea taken from classic stable core)
-                // This completely bypasses disk I/O errors and 401 cache conflicts
+                // 2. Pure In-Memory Authentication Mappings (Completely independent)
                 const pristineCreds = initAuthCreds();
                 const ephemeralAuthState = {
                     creds: pristineCreds,
@@ -132,38 +117,23 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                         const finalBotId = botId || `${currentSock.user.id.split(':')[0]}:0`;
                         const authenticatedNumber = finalBotId.split(':')[0];
 
-                        console.log(`[Handshake Success] ${authenticatedNumber} safely authenticated! Transferring profile payload via Base64 mapping...`);
+                        console.log(`[Handshake Success] ${authenticatedNumber} safely authenticated 100% in memory!`);
 
-                        // Register core infrastructure activation records
-                        await supabase
-                            .from('bot_accounts')
-                            .upsert({ 
-                                server_id: SERVER_ID, 
-                                bot_id: finalBotId, 
-                                status: 'active' 
-                            });
-
-                        // COMPACT BASE64 BLOCK SYNC (Eliminates cloud network lag or 428 errors entirely)
+                        // COMPACT BASE64 BLOCK SYNC - Ready to be passed to runtime memory state
                         const cloudPackData = JSON.stringify(ephemeralAuthState.creds, BufferJSON.replacer);
-
-                        await supabase
-                            .from('bot_sessions')
-                            .upsert({
-                                server_id: SERVER_ID,
-                                bot_id: finalBotId,
-                                session_key: 'master_creds',
-                                session_data: cloudPackData
-                            });
 
                         // Broadcast success event confirmation back to UI layers
                         socket.emit('pairingSuccess', { 
-                            message: 'Bunny MD connected successfully! Check your WhatsApp chat for initialization reports.' 
+                            message: 'Bunny MD connected successfully! Check your WhatsApp chat for initialization reports.',
+                            sessionCreds: cloudPackData // Sent back to frontend if needed, or injected locally
                         });
 
                         // Kill local registration listeners and pass execution tasks over to main index process cluster loop
                         currentSock.ev.removeAllListeners('connection.update');
                         currentSock = null;
-                        await startBotInstance(finalBotId, true);
+                        
+                        // Pass to index.js memory loop directly with credentials included
+                        await startBotInstance(finalBotId, true, ephemeralAuthState.creds);
                     }
 
                     if (connection === 'close') {
@@ -197,5 +167,5 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
             }
         });
     });
-                                            }
-                              
+                        }
+            

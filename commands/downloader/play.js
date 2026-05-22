@@ -1,6 +1,6 @@
 module.exports = {
-    commandConfig,
-    executeAutonomousCommand
+    config: commandConfig,
+    execute: executeAutonomousCommand
 };
 
 const fs = require('fs');
@@ -15,6 +15,7 @@ const ffmpeg = require('fluent-ffmpeg');
  */
 const commandConfig = {
     name: 'play',
+    alias: ['song', 'ytaudio'],
     category: 'download',
     description: 'Search and download music from YouTube with thumbnail preview.'
 };
@@ -22,25 +23,22 @@ const commandConfig = {
 /**
  * Advanced Music Download Command Node
  */
-async function executeAutonomousCommand(context) {
-    const { sock, msg, remoteJid, query, config } = context;
+async function executeAutonomousCommand(ctx) {
+    const { sock, msg, from, state, args } = ctx;
 
     try {
+        const query = args.join(' ');
         if (!query) {
-            return await sock.sendMessage(remoteJid, {
-                text: `Usage: ${config.prefix || '.'}play <song name>`
-            }, { quoted: msg });
+            return await ctx.reply(`Usage: ${state.prefix || '.'}play <song name>`);
         }
 
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             react: { text: '🎵', key: msg.key }
         });
 
         const searchResult = await yts(query);
         if (!searchResult.videos.length) {
-            return await sock.sendMessage(remoteJid, {
-                text: `No results found for "${query}"`
-            }, { quoted: msg });
+            return await ctx.reply(`No results found for "${query}"`);
         }
 
         const video = searchResult.videos[0];
@@ -58,7 +56,7 @@ async function executeAutonomousCommand(context) {
 │ Quality: 128kbps
 ╰⊷ Downloading audio...`;
 
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             image: { url: thumbnailUrl },
             caption: infoPayload
         }, { quoted: msg });
@@ -68,32 +66,23 @@ async function executeAutonomousCommand(context) {
 
         await new Promise((resolve, reject) => {
             ffmpeg(audioStream)
-               .audioBitrate(128)
-               .format('mp3')
-               .save(tempFilePath)
-               .on('end', resolve)
-               .on('error', reject);
+              .audioBitrate(128)
+              .format('mp3')
+              .save(tempFilePath)
+              .on('end', resolve)
+              .on('error', reject);
         });
 
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             audio: { url: tempFilePath },
             mimetype: 'audio/mpeg',
-            fileName: `${videoTitle}.mp3`
+            fileName: `${videoTitle.replace(/[^a-zA-Z0-9 ]/g, '')}.mp3`
         }, { quoted: msg });
 
         if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
 
     } catch (commandException) {
         console.error(`[Command Exception] Critical failure inside download/play.js execution tree:`, commandException.message);
-
-        try {
-            await sock.sendMessage(remoteJid, {
-                text: `\`\`Audio download failed. Try another song or check the link.\`\``
-            }, {
-                quoted: msg
-            });
-        } catch (secondaryFault) {
-            console.error(`[Command Fatal] Emergency reporting pipe severed:`, secondaryFault.message);
-        }
+        await ctx.reply(`\`\`Audio download failed. Try another song or check the link.\`\``);
     }
-                                                       }
+}

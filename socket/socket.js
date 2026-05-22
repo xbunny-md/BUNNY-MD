@@ -1,4 +1,3 @@
-import { Boom } from '@hapi/boom';
 import makeWASocket, { 
     DisconnectReason, 
     useMultiFileAuthState 
@@ -8,9 +7,10 @@ import pino from 'pino';
 /**
  * Binds the WebSocket Routing Engine to the main Express HTTP Server
  * Handles secure connection handshakes, pairing requests, auto-updating QR codes, and database persistence
+ * Fully optimized for Baileys v7 natively without relying on internal @hapi/boom imports
  */
 export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT_CONNECTIONS, supabase) {
-    
+
     io.on('connection', (socket) => {
         console.log(`[Socket Session] New frontend client linked: ${socket.id}`);
 
@@ -22,10 +22,10 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
          */
         socket.on('requestPairing', async (payload) => {
             const { phoneNumber, method } = payload; // method can be 'qr' or 'pairingCode'
-            
+
             // Clean phone number format if provided
             const cleanNumber = phoneNumber ? phoneNumber.replace(/[^0-9]/g, '') : null;
-            
+
             if (method === 'pairingCode' && !cleanNumber) {
                 return socket.emit('error', { message: 'A valid WhatsApp phone number is strictly required for pairing code authentication.' });
             }
@@ -81,7 +81,7 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
 
                 // 4. Actively track handshake process changes and intercept confirmation/QR events
                 currentSock.ev.on('creds.update', saveCreds);
-                
+
                 currentSock.ev.on('connection.update', async (update) => {
                     const { connection, lastDisconnect, qr } = update;
 
@@ -94,9 +94,9 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                     if (connection === 'open') {
                         const finalBotId = botId || `${currentSock.user.id.split(':')[0]}:0`;
                         const authenticatedNumber = finalBotId.split(':')[0];
-                        
+
                         console.log(`[Handshake Success] ${authenticatedNumber} safely authenticated! Transferring profile payload...`);
-                        
+
                         // Register structural parameters inside main infrastructure tables
                         await supabase
                             .from('bot_accounts')
@@ -128,9 +128,10 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                     }
 
                     if (connection === 'close') {
-                        const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
+                        // Native Baileys v7 error payload routing replacing the deprecated @hapi/boom extractor dependency
+                        const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
                         console.log(`[Socket Engine Connection] Registration lifecycle closed. Reason code: ${reason}`);
-                        
+
                         if (reason === DisconnectReason.loggedOut) {
                             socket.emit('error', { message: 'Device pairing initialization was rejected or logged out.' });
                         }

@@ -49,9 +49,12 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                     });
                 }
 
-                // If a connection already exists for this socket session, clean it up before opening a new one
+                // Safely clear socket reference without triggering hard logout during internal setup transitions
                 if (currentSock) {
-                    try { currentSock.logout(); } catch (_) {}
+                    try { 
+                        currentSock.ev.removeAllListeners('connection.update');
+                        currentSock.end(); // Use end() instead of logout() to avoid server-side session wipeout
+                    } catch (_) {}
                 }
 
                 console.log(`[Socket Engine] Initializing WhatsApp instance via [${method}] for session: ${sessionIdentifier}`);
@@ -106,14 +109,14 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                                 status: 'active' 
                             });
 
-                        // Export in-memory creds straight into cloud tables
+                        // Export master credentials straight into cloud table mapped to the new hybrid index scheme
                         await supabase
                             .from('bot_sessions')
                             .upsert({
                                 server_id: SERVER_ID,
                                 bot_id: finalBotId,
-                                session_key: 'creds',
-                                session_data: state.creds
+                                session_key: 'master_creds',
+                                session_data: JSON.stringify(state.creds)
                             });
 
                         // Broadcast success event confirmation back to UI layers
@@ -128,9 +131,14 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
                     }
 
                     if (connection === 'close') {
-                        // Native Baileys v7 error payload routing replacing the deprecated @hapi/boom extractor dependency
                         const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.statusCode;
                         console.log(`[Socket Engine Connection] Registration lifecycle closed. Reason code: ${reason}`);
+
+                        // CRITICAL BYPASS: If WhatsApp requests a restart (515), DO NOT panic or emit errors to front-end
+                        if (reason === 515 || reason === DisconnectReason.restartRequired) {
+                            console.log(`[Socket Engine Balance] Internal hot-restart signaled by WhatsApp network. Keeping stream pipeline warm.`);
+                            return; 
+                        }
 
                         if (reason === DisconnectReason.loggedOut) {
                             socket.emit('error', { message: 'Device pairing initialization was rejected or logged out.' });
@@ -144,10 +152,11 @@ export function bindSocketRoutingEngine(io, startBotInstance, SERVER_ID, MAX_BOT
             }
         });
 
+        // Fixed frontend disconnect logic to avoid blowing up active handshake registration flows
         socket.on('disconnect', () => {
             console.log(`[Socket Session] Client socket pipeline disconnected: ${socket.id}`);
             if (currentSock) {
-                try { currentSock.logout(); } catch (_) {}
+                currentSock.ev.removeAllListeners('connection.update');
                 currentSock = null;
             }
         });

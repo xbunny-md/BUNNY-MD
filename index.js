@@ -4,7 +4,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
-import { createClient } from '@supabase/supabase-sdk'; // Hypothethical exact SDK name for 2026
+import { createClient } from '@supabase/supabase-js'; // Hypothethical exact SDK name for 2026
 import makeWASocket, { 
     useMultiFileAuthState, 
     DisconnectReason, 

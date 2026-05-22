@@ -1,6 +1,6 @@
 module.exports = { 
-    commandConfig, 
-    executeAutonomousCommand 
+    config: commandConfig, 
+    execute: executeAutonomousCommand 
 };
 
 /**
@@ -8,6 +8,7 @@ module.exports = {
  */
 const commandConfig = {
     name: 'setprefix',
+    alias: ['prefix'],
     category: 'settings',
     description: 'Update the bot command prefix in real-time without restart.'
 };
@@ -15,31 +16,33 @@ const commandConfig = {
 /**
  * Prefix Update Command Node
  */
-async function executeAutonomousCommand(context) {
-    const { sock, msg, remoteJid, query, supabase, config, isOwner, clientId } = context;
+async function executeAutonomousCommand(ctx) {
+    const { sock, msg, from, state, args, isOwner } = ctx;
 
     try {
         if (!isOwner) {
-            return await sock.sendMessage(remoteJid, {
-                text: 'Access Denied. Only the owner can change settings.'
-            }, { quoted: msg });
+            return await ctx.reply('Access Denied. Only the owner can change settings.');
         }
 
-        if (!query) {
-            return await sock.sendMessage(remoteJid, {
-                text: `Usage: ${config.prefix || '.'}setprefix <new_prefix>\nExample: ${config.prefix || '.'}setprefix !`
-            }, { quoted: msg });
+        const newPrefix = args.join(' ').trim();
+
+        if (!newPrefix) {
+            return await ctx.reply(
+                `Usage: ${state.prefix}setprefix <new_prefix>\nExample: ${state.prefix}setprefix !`
+            );
         }
 
-        const newPrefix = query.trim();
+        if (newPrefix.length > 3) {
+            return await ctx.reply('Prefix too long. Use 1-3 characters max.');
+        }
 
-        await supabase
-            .from('bunny_settings')
-            .update({ extra_data: { current: newPrefix } })
-            .eq('client_id', clientId)
-            .eq('setting_name', 'prefix');
+        const success = await state.updateSetting('prefix', newPrefix);
+        
+        if (!success) {
+            return await ctx.reply('Failed to update prefix. Check database connection.');
+        }
 
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             react: { text: '🌀', key: msg.key }
         });
 
@@ -47,9 +50,9 @@ async function executeAutonomousCommand(context) {
 `╭─⌈ ⚙️ *Settings Updated* ⌋
 │ Prefix changed to: ${newPrefix}
 │ Status: Applied instantly
-╰⊷ *${config.bot_name || 'Bunny MD'}*`;
+╰⊷ *${state.botName || 'Bunny MD'}*`;
 
-        await sock.sendMessage(remoteJid, { 
+        await sock.sendMessage(from, { 
             text: successPayload 
         }, { 
             quoted: msg 
@@ -57,11 +60,6 @@ async function executeAutonomousCommand(context) {
 
     } catch (commandException) {
         console.error(`[Command Exception] Critical failure inside settings/setprefix.js execution tree:`, commandException.message);
-        
-        await sock.sendMessage(remoteJid, { 
-            text: `\`\`Failed to update prefix. Check database connection.\`\`` 
-        }, { 
-            quoted: msg 
-        });
+        await ctx.reply('Failed to update prefix. Check database connection.');
     }
 }

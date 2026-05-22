@@ -1,57 +1,70 @@
-async function routeMessage(msg, sock, { commands, aliases, observers, state }) {
-  try {
-    const from = msg.key.remoteJid;
-    const sender = msg.key.participant || msg.key.remoteJid;
-    const body = getMessageBody(msg);
-    if (!body) return;
+const fs = require('fs');
+const path = require('path');
 
-    // Run observers first
-    for (const obs of observers) {
-      try {
-        await obs({ msg, sock, state, from, sender, body });
-      } catch (e) {
-        console.error("[Observer Error]:", e.message);
-      }
+async function loadCommands() {
+    const commands = new Map();
+    const aliases = new Map();
+    const observers = [];
+
+    const commandsPath = path.join(__dirname, 'commands');
+
+    if (!fs.existsSync(commandsPath)) {
+        console.log('[Loader] No commands folder found');
+        return { commands, aliases, observers };
     }
 
-    // Check prefix
-    if (!body.startsWith(state.prefix)) return;
+    const categories = fs.readdirSync(commandsPath).filter(file =>
+        fs.statSync(path.join(commandsPath, file)).isDirectory()
+    );
 
-    const args = body.slice(state.prefix.length).trim().split(/\s+/);
-    const cmdName = args.shift().toLowerCase();
-    const commandName = aliases.get(cmdName) || cmdName;
+    for (const category of categories) {
+        const categoryPath = path.join(commandsPath, category);
+        const files = fs.readdirSync(categoryPath).filter(file => file.endsWith('.js'));
 
-    const command = commands.get(commandName);
-    if (!command) return;
+        for (const file of files) {
+            const filePath = path.join(categoryPath, file);
+            try {
+                delete require.cache[require.resolve(filePath)];
+                const module = require(filePath);
 
-    const ctx = {
-      sock,
-      msg,
-      args,
-      state,
-      from,
-      sender,
-      body,
-      isOwner: state.isOwner(sender),
-      reply: async (text) => {
-        await sock.sendMessage(from, { text }, { quoted: msg });
-      }
-    };
+                // Handle both formats:
+                // New: module.exports = { config, execute }
+                // Old: module.exports = { commandConfig, executeAutonomousCommand }
+                let config, execute;
 
-    await command.execute(ctx);
-  } catch (err) {
-    console.error("[Router Error]:", err.message);
-  }
+                if (module.config && module.execute) {
+                    config = module.config;
+                    execute = module.execute;
+                } else if (module.commandConfig && module.executeAutonomousCommand) {
+                    config = module.commandConfig;
+                    execute = module.executeAutonomousCommand;
+                } else {
+                    console.log(`[Loader] Skipped ${file}: Invalid export format`);
+                    continue;
+                }
+
+                if (!config?.name ||!execute) {
+                    console.log(`[Loader] Skipped ${file}: Missing name or execute`);
+                    continue;
+                }
+
+                commands.set(config.name, { config, execute });
+
+                // Register aliases
+                if (config.alias && Array.isArray(config.alias)) {
+                    config.alias.forEach(alias => aliases.set(alias, config.name));
+                }
+
+                console.log(`[Loader] Loaded ${config.name} from ${category}/${file}`);
+
+            } catch (err) {
+                console.error(`[Loader] Failed to load ${file}:`, err.message);
+            }
+        }
+    }
+
+    console.log(`[Loader] Loaded ${commands.size} commands, ${aliases.size} aliases`);
+    return { commands, aliases, observers };
 }
 
-function getMessageBody(msg) {
-  return (
-    msg.message?.conversation ||
-    msg.message?.extendedTextMessage?.text ||
-    msg.message?.imageMessage?.caption ||
-    msg.message?.videoMessage?.caption ||
-    ""
-  );
-}
-
-module.exports = { routeMessage };
+module.exports = { loadCommands };

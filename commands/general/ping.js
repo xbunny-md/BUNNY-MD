@@ -1,3 +1,8 @@
+module.exports = { 
+    commandConfig, 
+    executeAutonomousCommand 
+};
+
 const { performance } = require('perf_hooks');
 
 /**
@@ -32,19 +37,16 @@ async function executeAutonomousCommand(context) {
         const processingBaseline = 1 + 1; 
         const executionEndTimestamp = performance.now();
         
-        const serverLatencyMs = (executionEndTimestamp - executionStartTimestamp).toFixed(4);
+        const serverLatencyMs = (executionEndTimestamp - executionStartTimestamp).toFixed(0);
 
         // 3. Extract dynamic configuration identities straight from the Supabase context map
         const activeBotIdentityName = config.bot_name || 'Bunny MD';
-        const activeBotMonospaceFooter = config.bot_footer || 'Powered by Bunny Tech';
 
-        // 4. Construct the high-fidelity rounded-edge layout template incorporating metadata mappings
+        // 4. Construct the high-fidelity rounded-edge layout template
         const dynamicPingPayload = 
 `╭─⌈ ⚡ *${activeBotIdentityName}* ⌋
-│ speed: *${serverLatencyMs}ms* [█████████▒]
-│ category: *${commandConfig.category}*
-│ info: _${commandConfig.description}_
-╰⊷ \`\`\`${activeBotMonospaceFooter}\`\`\``;
+│ ${serverLatencyMs}ms [█████████▒]
+╰⊷ *${activeBotIdentityName}*`;
 
         // 5. Dispatch the final localized payload as a direct contextual reply to the user message
         await sock.sendMessage(remoteJid, { 
@@ -67,8 +69,3 @@ async function executeAutonomousCommand(context) {
         }
     }
 }
-
-module.exports = { 
-    commandConfig, 
-    executeAutonomousCommand 
-};

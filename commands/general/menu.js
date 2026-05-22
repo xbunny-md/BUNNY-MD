@@ -1,6 +1,6 @@
 module.exports = {
-    commandConfig,
-    executeAutonomousCommand
+    config: commandConfig,
+    execute: executeAutonomousCommand
 };
 
 const fs = require('fs');
@@ -13,6 +13,7 @@ const axios = require('axios');
  */
 const commandConfig = {
     name: 'menu',
+    alias: ['help', 'list'],
     category: 'general',
     description: 'Displays the complete system interface panel dynamically categorized with server statistic.'
 };
@@ -20,11 +21,11 @@ const commandConfig = {
 /**
  * Highly Optimized Dynamic Menu Generation Engine
  */
-async function executeAutonomousCommand(context) {
-    const { sock, msg, remoteJid, senderJid, config } = context;
+async function executeAutonomousCommand(ctx) {
+    const { sock, msg, from, state } = ctx;
 
     try {
-        await sock.sendMessage(remoteJid, { react: { text: '🐇', key: msg.key } });
+        await sock.sendMessage(from, { react: { text: '🐇', key: msg.key } });
 
         const totalUptimeSeconds = process.uptime();
         const calculationHours = Math.floor(totalUptimeSeconds / 3600);
@@ -40,13 +41,16 @@ async function executeAutonomousCommand(context) {
         const totalRamUtilizationPercentage = Math.round(globalMemoryUtilizationRatio * 100);
 
         const underlyingOperatingPlatform = os.platform() === 'linux'? '🐧 Linux' : '🪟 Windows';
-        const userIdentity = senderJid.split('@')[0];
+        const userIdentity = from.split('@')[0];
 
+        // Scan commands folder correctly
         const rootCommandsDirectory = path.join(__dirname, '..');
         const dynamicCommandCatalog = {};
 
         if (fs.existsSync(rootCommandsDirectory)) {
-            const discoveredSubdirectories = fs.readdirSync(rootCommandsDirectory).filter(file => fs.statSync(path.join(rootCommandsDirectory, file)).isDirectory());
+            const discoveredSubdirectories = fs.readdirSync(rootCommandsDirectory).filter(file =>
+                fs.statSync(path.join(rootCommandsDirectory, file)).isDirectory()
+            );
 
             for (const subdirectoryFolder of discoveredSubdirectories) {
                 const structuralTargetFolderPath = path.join(rootCommandsDirectory, subdirectoryFolder);
@@ -55,12 +59,13 @@ async function executeAutonomousCommand(context) {
                 for (const scriptFileToken of fileTokensInsideFolder) {
                     try {
                         const preciseScriptModulePath = path.join(structuralTargetFolderPath, scriptFileToken);
+                        delete require.cache[require.resolve(preciseScriptModulePath)];
                         const importedCommandModule = require(preciseScriptModulePath);
 
-                        const category = (importedCommandModule.commandConfig?.category || subdirectoryFolder).toUpperCase();
+                        const category = (importedCommandModule.config?.category || subdirectoryFolder).toUpperCase();
                         if (!dynamicCommandCatalog[category]) dynamicCommandCatalog[category] = [];
 
-                        const cmdName = importedCommandModule.commandConfig?.name || scriptFileToken.replace('.js', '');
+                        const cmdName = importedCommandModule.config?.name || scriptFileToken.replace('.js', '');
                         if (!dynamicCommandCatalog[category].includes(cmdName)) {
                             dynamicCommandCatalog[category].push(cmdName);
                         }
@@ -69,10 +74,10 @@ async function executeAutonomousCommand(context) {
             }
         }
 
-        const systemPrefixToken = config.prefix || '.';
-        const configuredBotName = config.bot_name || 'Bunny MD';
-        const configuredOwnerName = config.owner_name || 'Lupin Starnley';
-        const footerText = config.bot_footer || 'Powered by Bunny Tech';
+        const systemPrefixToken = state.prefix || '.';
+        const configuredBotName = state.botName || 'Bunny MD';
+        const configuredOwnerName = state.ownerName || 'Lupin Starnley';
+        const footerText = 'Powered by Bunny Tech';
 
         let primaryConstructedMenuBuffer =
 `╭──⌈ ${configuredBotName} ⌋
@@ -85,18 +90,24 @@ async function executeAutonomousCommand(context) {
 ╰────────────────\n\n`;
 
         for (const cat of Object.keys(dynamicCommandCatalog).sort()) {
-            primaryConstructedMenuBuffer += `╭──⌈ ${cat} MANAGEMENT ⌋\n`;
-            dynamicCommandCatalog[cat].sort().forEach(cmd => { primaryConstructedMenuBuffer += `│ ${cmd}\n`; });
+            primaryConstructedMenuBuffer += `╭──⌈ ${cat} ⌋\n`;
+            dynamicCommandCatalog[cat].sort().forEach(cmd => {
+                primaryConstructedMenuBuffer += `│ ${systemPrefixToken}${cmd}\n`;
+            });
             primaryConstructedMenuBuffer += `╰────────────────\n\n`;
         }
 
         primaryConstructedMenuBuffer += `${footerText}`;
 
         const tempImagePath = path.join(os.tmpdir(), 'menu_temp.png');
-        const imgResponse = await axios({ url: 'https://i.ibb.co/Mdg2Fkd/file-00000f41871fdb744b8a6b7b612fa.png', responseType: 'arraybuffer' });
+        const imgResponse = await axios({
+            url: 'https://i.ibb.co/Mdg2Fkd/file-00000f41871fdb744b8a6b7b612fa.png',
+            responseType: 'arraybuffer',
+            timeout: 10000
+        });
         fs.writeFileSync(tempImagePath, Buffer.from(imgResponse.data, 'binary'));
 
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             image: { url: tempImagePath },
             caption: primaryConstructedMenuBuffer
         }, { quoted: msg });
@@ -105,5 +116,6 @@ async function executeAutonomousCommand(context) {
 
     } catch (e) {
         console.error("Menu Error:", e.message);
+        await ctx.reply("Menu failed to load. Try again.");
     }
 }

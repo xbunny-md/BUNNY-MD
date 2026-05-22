@@ -1,6 +1,6 @@
 module.exports = { 
-    commandConfig, 
-    executeAutonomousCommand 
+    config: commandConfig, 
+    execute: executeAutonomousCommand 
 };
 
 /**
@@ -8,6 +8,7 @@ module.exports = {
  */
 const commandConfig = {
     name: 'alive',
+    alias: ['status'],
     category: 'general',
     description: 'Checks if the bot is online and responsive.'
 };
@@ -15,25 +16,25 @@ const commandConfig = {
 /**
  * Simple Alive Command Node
  */
-async function executeAutonomousCommand(context) {
-    const { sock, msg, remoteJid, config } = context;
+async function executeAutonomousCommand(ctx) {
+    const { sock, msg, from, state } = ctx;
 
     try {
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             react: {
                 text: '🦋',
                 key: msg.key
             }
         });
 
-        const activeBotIdentityName = config.bot_name || 'Bunny MD';
+        const activeBotIdentityName = state.botName || 'Bunny MD';
 
         const alivePayload = 
 `╭─⌈ ⚡ *${activeBotIdentityName}* ⌋
 │ Status: Online
 ╰⊷ *${activeBotIdentityName}*`;
 
-        await sock.sendMessage(remoteJid, { 
+        await sock.sendMessage(from, { 
             text: alivePayload 
         }, { 
             quoted: msg 
@@ -41,13 +42,9 @@ async function executeAutonomousCommand(context) {
 
     } catch (commandException) {
         console.error(`[Command Exception] Critical failure inside general/alive.js execution tree:`, commandException.message);
-        
+
         try {
-            await sock.sendMessage(remoteJid, { 
-                text: `\`\`System health check anomaly detected. Framework safe-mode enforced.\`\`` 
-            }, { 
-                quoted: msg 
-            });
+            await ctx.reply(`\`\`System health check anomaly detected. Framework safe-mode enforced.\`\``);
         } catch (secondaryFault) {
             console.error(`[Command Fatal] Emergency reporting pipe severed:`, secondaryFault.message);
         }

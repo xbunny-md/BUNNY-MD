@@ -1,6 +1,6 @@
 module.exports = { 
-    commandConfig, 
-    executeAutonomousCommand 
+    config: commandConfig, 
+    execute: executeAutonomousCommand 
 };
 
 /**
@@ -8,6 +8,7 @@ module.exports = {
  */
 const commandConfig = {
     name: 'setowner',
+    alias: ['sowner'],
     category: 'settings',
     description: 'Update the bot owner number in real-time without restart.'
 };
@@ -15,37 +16,35 @@ const commandConfig = {
 /**
  * Owner Update Command Node
  */
-async function executeAutonomousCommand(context) {
-    const { sock, msg, remoteJid, query, supabase, config, isOwner, clientId } = context;
+async function executeAutonomousCommand(ctx) {
+    const { sock, msg, from, state, args, isOwner } = ctx;
 
     try {
         if (!isOwner) {
-            return await sock.sendMessage(remoteJid, {
-                text: 'Access Denied. Only the owner can change settings.'
-            }, { quoted: msg });
+            return await ctx.reply('Access Denied. Only the owner can change settings.');
         }
 
-        if (!query) {
-            return await sock.sendMessage(remoteJid, {
-                text: `Usage: ${config.prefix || '.'}setowner <number>\nExample: ${config.prefix || '.'}setowner 2557xxxxxxx\nNote: Enter number without + or spaces`
-            }, { quoted: msg });
-        }
+        const newOwner = args.join(' ').trim().replace(/[^0-9]/g, '');
 
-        const newOwner = query.trim().replace(/[^0-9]/g, '');
+        if (!newOwner) {
+            return await ctx.reply(
+                `Usage: ${state.prefix}setowner <number>\nExample: ${state.prefix}setowner 255780470905\nNote: Enter number without + or spaces`
+            );
+        }
 
         if (newOwner.length < 10) {
-            return await sock.sendMessage(remoteJid, {
-                text: `Invalid number format. Use international format without +\nExample: 255780470905`
-            }, { quoted: msg });
+            return await ctx.reply(
+                `Invalid number format. Use international format without +\nExample: 255780470905`
+            );
         }
 
-        await supabase
-            .from('bunny_settings')
-            .update({ extra_data: { current: newOwner } })
-            .eq('client_id', clientId)
-            .eq('setting_name', 'owner_number');
+        const success = await state.updateSetting('owner_number', newOwner);
+        
+        if (!success) {
+            return await ctx.reply('Failed to update owner number. Check database connection.');
+        }
 
-        await sock.sendMessage(remoteJid, {
+        await sock.sendMessage(from, {
             react: { text: '🏵️', key: msg.key }
         });
 
@@ -53,9 +52,9 @@ async function executeAutonomousCommand(context) {
 `╭─⌈ ⚙️ *Settings Updated* ⌋
 │ Owner number changed to: ${newOwner}
 │ Status: Applied instantly
-╰⊷ *${config.bot_name || 'Bunny MD'}*`;
+╰⊷ *${state.botName || 'Bunny MD'}*`;
 
-        await sock.sendMessage(remoteJid, { 
+        await sock.sendMessage(from, { 
             text: successPayload 
         }, { 
             quoted: msg 
@@ -63,11 +62,6 @@ async function executeAutonomousCommand(context) {
 
     } catch (commandException) {
         console.error(`[Command Exception] Critical failure inside settings/setowner.js execution tree:`, commandException.message);
-        
-        await sock.sendMessage(remoteJid, { 
-            text: `\`\`Failed to update owner number. Check database connection.\`\`` 
-        }, { 
-            quoted: msg 
-        });
+        await ctx.reply('Failed to update owner number. Check database connection.');
     }
 }

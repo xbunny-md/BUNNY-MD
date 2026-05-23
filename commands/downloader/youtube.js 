@@ -1,0 +1,232 @@
+// commands/downloader/youtube.js
+import axios from 'axios'
+import yts from 'yt-search'
+import ytdl from '@distube/ytdl-core'
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
+
+export const name = 'youtube'
+export const alias = ['yt', 'ytdl', 'play', 'song']
+export const category = 'Downloader'
+export const desc = 'Search and download YouTube videos/audios in HD'
+
+export default async function youtube(sock, { msg, from, args }, botSettings) {
+  const tempFilePath = path.join(os.tmpdir(), `bunny_yt_${Date.now()}.mp4`)
+
+  try {
+    // 1. Extract query or link from args, message, or quoted message
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const quotedText = quoted?.conversation || quoted?.extendedTextMessage?.text || ''
+    const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
+    const textAfterCmd = args.join(' ')
+
+    let input = textAfterCmd || messageText.replace(/^[!.]?yt(ube)?\s*/i, '') || quotedText
+
+    if (!input) {
+      return await sock.sendMessage(from, {
+        text: `> Usage: ${botSettings.prefix}yt <query or link>\n> Example: ${botSettings.prefix}yt Burna Boy Last Last\n> Example: ${botSettings.prefix}yt https://youtu.be/abc123`
+      }, { quoted: msg })
+    }
+
+    // 2. React first - BUNNY BEAST MODE 🛹
+    await sock.sendMessage(from, {
+      react: { text: '🛹', key: msg.key }
+    })
+
+    const processingMsg = await sock.sendMessage(from, {
+      text: `> Processing YouTube request...`
+    }, { quoted: msg })
+
+    let videoInfo = null
+    const ytRegex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/
+    const ytMatch = input.match(ytRegex)
+
+    // 3. If it's a link, get info directly
+    if (ytMatch) {
+      const videoId = ytMatch[1]
+      const videoUrl = `https://youtu.be/${videoId}`
+
+      try {
+        const info = await ytdl.getInfo(videoUrl)
+        videoInfo = {
+          url: videoUrl,
+          title: info.videoDetails.title,
+          author: info.videoDetails.author.name,
+          duration: parseInt(info.videoDetails.lengthSeconds),
+          thumbnail: info.videoDetails.thumbnails.pop().url,
+          views: parseInt(info.videoDetails.viewCount),
+          isLink: true
+        }
+      } catch (e) {
+        throw new Error('Invalid YouTube link or video unavailable')
+      }
+    }
+    // 4. If it's a search query, search YouTube
+    else {
+      const searchResult = await yts(input)
+      if (!searchResult.videos.length) {
+        throw new Error('No results found')
+      }
+
+      const video = searchResult.videos[0]
+      videoInfo = {
+        url: video.url,
+        title: video.title,
+        author: video.author.name,
+        duration: video.seconds,
+        thumbnail: video.thumbnail,
+        views: video.views,
+        isLink: false
+      }
+    }
+
+    // 5. Check duration - limit 15 mins to avoid huge files
+    if (videoInfo.duration > 900) {
+      throw new Error(`Video too long: ${Math.floor(videoInfo.duration / 60)}:${(videoInfo.duration % 60).toString().padStart(2, '0')}\nMax duration is 15:00 minutes`)
+    }
+
+    // 6. Format duration
+    const formatDuration = (seconds) => {
+      const min = Math.floor(seconds / 60)
+      const sec = seconds % 60
+      return `${min}:${sec.toString().padStart(2, '0')}`
+    }
+
+    // 7. Send info card - BUNNY STYLE
+    const infoPayload = `╭─⌈ 🛹 *${botSettings.botname || 'BUNNY MD'}* ⌋
+│ Title: ${videoInfo.title.slice(0, 40)}
+│ Channel: ${videoInfo.author}
+│ Duration: ${formatDuration(videoInfo.duration)}
+│ Views: ${videoInfo.views.toLocaleString()}
+│ Quality: HD 720p MP4
+╰⊷ Downloading...`
+
+    await sock.sendMessage(from, {
+      image: { url: videoInfo.thumbnail },
+      caption: infoPayload
+    }, { quoted: msg })
+
+    // 8. Download Video - BEAST MODE with fallbacks
+    let downloadSuccess = false
+
+    // Primary: @distube/ytdl-core
+    try {
+      await new Promise((resolve, reject) => {
+        const stream = ytdl(videoInfo.url, {
+          filter: 'videoandaudio',
+          quality: 'highest',
+          requestOptions: {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+          }
+        })
+
+        const writeStream = fs.createWriteStream(tempFilePath)
+        stream.pipe(writeStream)
+
+        stream.on('error', reject)
+        writeStream.on('finish', () => {
+          downloadSuccess = true
+          resolve()
+        })
+        writeStream.on('error', reject)
+      })
+    } catch (e) {
+      console.log('[YT] Primary download failed, trying fallback...')
+    }
+
+    // Fallback: y2mate API
+    if (!downloadSuccess) {
+      try {
+        const videoId = ytdl.getVideoID(videoInfo.url)
+        const res = await axios.get(`https://www.y2mate.com/mates/analyzeV2/ajax`, {
+          params: {
+            k_query: `https://www.youtube.com/watch?v=${videoId}`,
+            k_page: 'home',
+            hl: 'en',
+            q_auto: 0
+          },
+          timeout: 20000
+        })
+
+        const links = res.data.links?.mp4
+        const hd720 = links?.['22'] || links?.['720'] || links?.['18'] || links?.['360']
+
+        if (hd720?.url) {
+          const videoRes = await axios.get(hd720.url, { responseType: 'stream', timeout: 60000 })
+          const writeStream = fs.createWriteStream(tempFilePath)
+          videoRes.data.pipe(writeStream)
+
+          await new Promise((resolve, reject) => {
+            writeStream.on('finish', resolve)
+            writeStream.on('error', reject)
+          })
+          downloadSuccess = true
+        }
+      } catch (e) {
+        console.log('[YT] Fallback failed')
+      }
+    }
+
+    if (!downloadSuccess ||!fs.existsSync(tempFilePath)) {
+      throw new Error('Failed to download video from all sources')
+    }
+
+    // 9. Check file size - WhatsApp limit 100MB
+    const stats = fs.statSync(tempFilePath)
+    const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2)
+    if (stats.size > 95 * 1024 * 1024) {
+      fs.unlinkSync(tempFilePath)
+      throw new Error(`File too large: ${fileSizeMB}MB\nWhatsApp limit is 100MB`)
+    }
+
+    // 10. Send video
+    await sock.sendMessage(from, {
+      video: { url: tempFilePath },
+      mimetype: 'video/mp4',
+      fileName: `${videoInfo.title.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 30)}.mp4`,
+      caption: `> Done. Enjoy 🐰`,
+      contextInfo: {
+        externalAdReply: {
+          title: videoInfo.title.slice(0, 60),
+          body: `${videoInfo.author} • ${formatDuration(videoInfo.duration)}`,
+          thumbnailUrl: videoInfo.thumbnail,
+          mediaType: 2,
+          renderLargerThumbnail: true,
+          sourceUrl: videoInfo.url
+        }
+      }
+    }, { quoted: msg })
+
+    // 11. Delete processing message and react done ✅
+    await sock.sendMessage(from, { delete: processingMsg.key })
+    await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+
+  } catch (error) {
+    console.error('[YT ERROR]', error.message)
+
+    let errorMsg = '> Failed to download YouTube video'
+    if (error.message.includes('unavailable')) {
+      errorMsg = '> Video is unavailable or private'
+    } else if (error.message.includes('No results')) {
+      errorMsg = '> No results found for your query'
+    } else if (error.message.includes('too long')) {
+      errorMsg = `> ${error.message}`
+    } else if (error.message.includes('too large')) {
+      errorMsg = `> ${error.message}`
+    } else if (error.message.includes('Sign in')) {
+      errorMsg = '> Video is age-restricted or requires login'
+    }
+
+    await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+
+  } finally {
+    // Cleanup temp file
+    if (fs.existsSync(tempFilePath)) {
+      fs.unlinkSync(tempFilePath)
+    }
+  }
+}

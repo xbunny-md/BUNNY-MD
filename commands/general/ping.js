@@ -1,62 +1,34 @@
-module.exports = { 
-    config: commandConfig, 
-    execute: executeAutonomousCommand 
-};
+// commands/general/ping.js
+export const name = 'ping'
+export const alias = ['p', 'speed', 'latency']
+export const category = 'General'
+export const desc = 'Check bot response speed and latency'
 
-const { performance } = require('perf_hooks');
+export default async function ping(sock, { msg, from }, botSettings) {
+  try {
+    const startTime = Date.now()
+    
+    const sentMsg = await sock.sendMessage(from, { text: 'Pinging...' }, { quoted: msg })
+    
+    const serverLatencyMs = Date.now() - startTime
+    const activeBotIdentityName = botSettings.botname || 'BUNNY MD'
 
-/**
- * Metadata Configuration Block for Dynamic System Menu Generation
- * This object is fully exposed to allow automatic indexing by menu.js
- */
-const commandConfig = {
-    name: 'ping',
-    alias: ['p', 'speed'],
-    category: 'general',
-    description: 'Measures server connection latency and operational baseline speed metrics.'
-};
-
-/**
- * Advanced High-Performance Ping Command Node
- * Custom styled with rounded corners and localized database typography
- */
-async function executeAutonomousCommand(ctx) {
-    const { sock, msg, from, state } = ctx;
-
-    try {
-        // Reaction
-        await sock.sendMessage(from, {
-            react: {
-                text: '🦸',
-                key: msg.key
-            }
-        });
-
-        const executionStartTimestamp = performance.now();
-        const processingBaseline = 1 + 1; 
-        const executionEndTimestamp = performance.now();
-
-        const serverLatencyMs = (executionEndTimestamp - executionStartTimestamp).toFixed(0);
-        const activeBotIdentityName = state.botName || 'Bunny MD';
-
-        const dynamicPingPayload = 
+    const dynamicPingPayload = 
 `╭─⌈ ⚡ *${activeBotIdentityName}* ⌋
 │ ${serverLatencyMs}ms [█████████▒]
-╰⊷ *${activeBotIdentityName}*`;
+╰⊷ *${activeBotIdentityName}*`
 
-        await sock.sendMessage(from, { 
-            text: dynamicPingPayload 
-        }, { 
-            quoted: msg 
-        });
+    await sock.sendMessage(from, {
+      text: dynamicPingPayload,
+      edit: sentMsg.key,
+      react: {
+        text: '🦸',
+        key: sentMsg.key
+      }
+    })
 
-    } catch (commandException) {
-        console.error(`[Command Exception] Critical failure inside general/ping.js execution tree:`, commandException.message);
-
-        try {
-            await ctx.reply(`\`\`System latency calculation anomaly detected. Framework safe-mode enforced.\`\``);
-        } catch (secondaryFault) {
-            console.error(`[Command Fatal] Emergency reporting pipe severed:`, secondaryFault.message);
-        }
-    }
+  } catch (error) {
+    console.log('Ping command error:', error.message)
+    await sock.sendMessage(from, { text: 'Failed to check ping.' }, { quoted: msg })
+  }
 }

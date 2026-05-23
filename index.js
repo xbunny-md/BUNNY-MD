@@ -6,8 +6,9 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import pino from 'pino'
 import qrcode from 'qrcode'
-import pkg from '@whiskeysockets/baileys' // BADILISHA HII
-const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion } = pkg // NA HII
+import fs from 'fs'
+import pkg from '@whiskeysockets/baileys'
+const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState, makeCacheableSignalKeyStore, Browsers } = pkg
 import { getBotSettings, listenSettingsUpdates, supabase } from './lib/supabase.js'
 import { initializeRouter, handleMessages } from './lib/router.js'
 import 'dotenv/config'
@@ -20,6 +21,7 @@ let botSettings = null
 let sock = null
 let qrString = ''
 let isConnected = false
+let reconnectAttempts = 0
 
 // 2. EXPRESS + SOCKET.IO SETUP
 const app = express()
@@ -34,149 +36,164 @@ app.get('/', (req, res) => {
   res.send('BUNNY MD is running 🐰')
 })
 
-// 3. SUPABASE AUTH STATE - Returns null if no session exists
-async function useAuthStateSupabase() {
-  const readData = async (id) => {
-    try {
-      const { data, error } = await supabase.from('b_sessions').select('data').eq('id', id).single()
-      if (error ||!data) return null
-      return JSON.parse(data.data)
-    } catch (e) {
-      return null
-    }
-  }
-
-  const writeData = async (id, value) => {
-    await supabase.from('b_sessions').upsert({ id, data: JSON.stringify(value) })
-  }
-
-  const removeData = async (id) => {
-    await supabase.from('b_sessions').delete().eq('id', id)
-  }
-
-  const creds = await readData('creds') || {}
-
-  return {
-    state: {
-      creds,
-      keys: {
-        get: async (type, ids) => {
-          const data = {}
-          for (const id of ids) {
-            const value = await readData(`${type}-${id}`)
-            if (value) data[id] = value
-          }
-          return data
-        },
-        set: async (data) => {
-          for (const category in data) {
-            for (const id in data[category]) {
-              await writeData(`${category}-${id}`, data[category][id])
-            }
-          }
-        }
-      }
-    },
-    saveCreds: async () => {
-      await writeData('creds', creds)
-    },
-    clearSession: async () => {
-      await removeData('creds')
-    }
+// 3. SUPABASE SESSION SYNC - MFUMO WA VEX
+async function syncSessionToCloud() {
+  try {
+    if (!fs.existsSync('./session/creds.json')) return
+    
+    const credsData = fs.readFileSync('./session/creds.json', 'utf-8')
+    const base64 = Buffer.from(credsData).toString('base64')
+    
+    await supabase.from('b_sessions').upsert({
+      id: 'creds',
+      data: base64
+    })
+    console.log('☁️ Session synced to Supabase')
+  } catch (e) {
+    console.log('Session sync error:', e.message)
   }
 }
 
-// 4. WHATSAPP CONNECTION - Checks session first
-async function connectToWhatsApp() {
-  const { state, saveCreds, clearSession } = await useAuthStateSupabase()
-  const { version } = await fetchLatestBaileysVersion()
+async function loadSessionFromCloud() {
+  try {
+    const { data } = await supabase
+      .from('b_sessions')
+      .select('data')
+      .eq('id', 'creds')
+      .single()
 
-  const hasSession = state.creds?.noiseKey? true : false
-
-  if (!hasSession) {
-    console.log('🔍 No session found in Supabase. QR will be generated for /pair.html')
-  } else {
-    console.log('🔄 Existing session found. Attempting to restore...')
+    if (data?.data) {
+      const decoded = Buffer.from(data.data, 'base64').toString('utf-8')
+      if (!fs.existsSync('./session')) fs.mkdirSync('./session', { recursive: true })
+      fs.writeFileSync('./session/creds.json', decoded)
+      console.log('☁️ Session restored from Supabase')
+      return true
+    }
+  } catch (e) {
+    console.log('No session in Supabase')
   }
+  return false
+}
 
-  sock = makeWASocket({
-    version,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    auth: state,
-    browser: ['BUNNY MD', 'Chrome', '120.0.0'],
-    connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 0,
-    keepAliveIntervalMs: 10000,
-    emitOwnEvents: true,
-    fireInitQueries: true,
-    generateHighQualityLinkPreview: true,
-    syncFullHistory: false,
-    markOnlineOnConnect: false,
-    retryRequestDelayMs: 250
-  })
+// 4. WHATSAPP CONNECTION - MFUMO WA VEX + FIXES
+async function connectToWhatsApp() {
+  try {
+    // Step 1: Load session kutoka Supabase kwenda local
+    const hasCloudSession = await loadSessionFromCloud()
+    
+    // Step 2: Tumia useMultiFileAuthState - HII NDIO SIRI YA VEX
+    const { state, saveCreds } = await useMultiFileAuthState('./session')
+    const { version, isLatest } = await fetchLatestBaileysVersion()
+    console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`)
 
-  // 5. HANDLE CONNECTION UPDATES
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update
+    const hasSession = state.creds?.noiseKey ? true : false
 
-    if (qr) {
-      qrString = qr
-      const qrImage = await qrcode.toDataURL(qr)
-      io.emit('qr', qrImage)
-      io.emit('status', 'Scan QR or use Pair Code')
-      console.log('📱 New QR generated - check /pair.html page')
+    if (!hasSession) {
+      console.log('🔍 No session found. QR will be generated for /pair.html')
+    } else {
+      console.log('🔄 Existing session found. Attempting to restore...')
     }
 
-    if (connection === 'open') {
-      isConnected = true
-      qrString = ''
-      io.emit('status', 'Connected')
-      console.log('✅ WhatsApp connected successfully!')
-      await sendConfirmationMessage()
-    }
+    sock = makeWASocket({
+      version,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: false,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
+      },
+      browser: Browsers.ubuntu('BUNNY MD'),
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 0,
+      keepAliveIntervalMs: 10000,
+      emitOwnEvents: true,
+      fireInitQueries: true,
+      generateHighQualityLinkPreview: true,
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+      retryRequestDelayMs: 250,
+      getMessage: async () => ({ conversation: '' })
+    })
 
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode
-      const shouldReconnect = statusCode!== DisconnectReason.loggedOut
+    // 5. HANDLE CONNECTION UPDATES
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update
 
-      isConnected = false
-      io.emit('status', 'Disconnected')
-      console.log('Connection closed. Reason:', lastDisconnect?.error?.message)
-
-      if (statusCode === DisconnectReason.loggedOut) {
-        console.log('❌ Logged out. Clearing session from Supabase...')
-        await clearSession()
-        qrString = ''
-        setTimeout(() => connectToWhatsApp(), 3000)
-      } else if (shouldReconnect) {
-        console.log('🔄 Reconnecting in 5 seconds...')
-        setTimeout(() => connectToWhatsApp(), 5000)
-      } else {
-        console.log('⚠️ Connection closed. Restarting in 10 seconds...')
-        setTimeout(() => connectToWhatsApp(), 10000)
+      if (qr) {
+        qrString = qr
+        try {
+          const qrImage = await qrcode.toDataURL(qr)
+          io.emit('qr', qrImage)
+          io.emit('status', 'Scan QR or use Pair Code')
+          console.log('📱 New QR generated - check /pair.html page')
+        } catch (err) {
+          console.log('QR generation failed:', err.message)
+        }
       }
-    }
-  })
 
-  // 6. SAVE CREDS WHEN UPDATED
-  sock.ev.on('creds.update', saveCreds)
+      if (connection === 'open') {
+        isConnected = true
+        qrString = ''
+        reconnectAttempts = 0
+        io.emit('status', 'Connected')
+        console.log('✅ WhatsApp connected successfully!')
+        await syncSessionToCloud() // Save session kwa Supabase
+        await sendConfirmationMessage()
+      }
 
-  // 7. HANDLE ALL INCOMING MESSAGES
-  sock.ev.on('messages.upsert', (m) => {
-    handleMessages(sock, m, botSettings)
-  })
+      if (connection === 'close') {
+        const statusCode = lastDisconnect?.error?.output?.statusCode
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut
+
+        isConnected = false
+        io.emit('status', 'Disconnected')
+        console.log('Connection closed. Reason:', lastDisconnect?.error?.message)
+
+        if (statusCode === DisconnectReason.loggedOut) {
+          console.log('❌ Logged out. Clearing session...')
+          await supabase.from('b_sessions').delete().eq('id', 'creds')
+          if (fs.existsSync('./session')) fs.rmSync('./session', { recursive: true, force: true })
+          qrString = ''
+          reconnectAttempts = 0
+          setTimeout(() => connectToWhatsApp(), 3000)
+        } else if (shouldReconnect) {
+          reconnectAttempts++
+          const delay = Math.min(reconnectAttempts * 5000, 30000)
+          console.log(`🔄 Reconnecting in ${delay/1000} seconds... Attempt ${reconnectAttempts}`)
+          setTimeout(() => connectToWhatsApp(), delay)
+        } else {
+          console.log('⚠️ Connection closed. Restarting in 10 seconds...')
+          setTimeout(() => connectToWhatsApp(), 10000)
+        }
+      }
+    })
+
+    // 6. SAVE CREDS WHEN UPDATED
+    sock.ev.on('creds.update', async () => {
+      await saveCreds()
+      await syncSessionToCloud() // Sync kila creds ikibadilika
+    })
+
+    // 7. HANDLE ALL INCOMING MESSAGES
+    sock.ev.on('messages.upsert', (m) => {
+      handleMessages(sock, m, botSettings)
+    })
+
+  } catch (err) {
+    console.error('Connection error:', err.message)
+    setTimeout(() => connectToWhatsApp(), 10000)
+  }
 }
 
 // 8. HANDLE PAIR CODE REQUEST FROM FRONTEND
 io.on('connection', (socket) => {
-  if (qrString &&!isConnected) {
+  if (qrString && !isConnected) {
     qrcode.toDataURL(qrString).then(qrImage => {
       socket.emit('qr', qrImage)
-    })
+    }).catch(() => {})
   }
 
-  socket.emit('status', isConnected? 'Connected' : 'Waiting for connection')
+  socket.emit('status', isConnected ? 'Connected' : 'Waiting for connection')
 
   socket.on('request_pair_code', async (phoneNumber) => {
     if (!sock || isConnected) return
@@ -195,7 +212,7 @@ io.on('connection', (socket) => {
 async function sendConfirmationMessage() {
   const s = botSettings
   const imageUrl = 'https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png'
-  const formatBool = (val) => val? 'On' : 'Off'
+  const formatBool = (val) => val ? 'On' : 'Off'
 
   const caption = `╭─⌈ *${s.botname}* ⌋
 │
@@ -256,3 +273,7 @@ async function startBot() {
 
 // 11. START EVERYTHING
 startBot()
+
+// 12. ERROR HANDLING
+process.on('uncaughtException', (err) => console.error('Caught exception: ', err))
+process.on('unhandledRejection', (reason, promise) => console.error('Unhandled Rejection:', reason))

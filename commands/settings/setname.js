@@ -1,16 +1,10 @@
 // commands/settings/setbotname.js
-import { createClient } from '@supabase/supabase-js'
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'setbotname'
 export const alias = ['setname', 'botname']
 export const category = 'Owner'
 export const desc = 'Update the bot name in real-time without restart'
-
-// Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-)
 
 export default async function setbotname(sock, { msg, from, sender, args }, botSettings) {
   try {

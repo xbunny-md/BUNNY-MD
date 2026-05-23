@@ -1,4 +1,3 @@
-// index.js
 import express from 'express'
 import { createServer } from 'http'
 import { Server } from 'socket.io'
@@ -22,8 +21,10 @@ let sock = null
 let qrString = ''
 let isConnected = false
 let reconnectAttempts = 0
+let lastCredsSync = 0 // Throttle Supabase writes
+const MAX_RECONNECTS = 10
 
-// 2. EXPRESS + SOCKET.IO SETUP
+// 2. EXPRESS + SOCKET.IO
 const app = express()
 const server = createServer(app)
 const io = new Server(server, { cors: { origin: "*" } })
@@ -32,21 +33,33 @@ const PORT = process.env.PORT || 3000
 app.use(express.static(join(__dirname, 'public')))
 app.use(express.json())
 
+// Health endpoint kwa UptimeRobot - HAIJIPIGI PING
 app.get('/', (req, res) => {
-  res.send('BUNNY MD is running 🐰')
+  res.json({
+    status: 'alive',
+    bot: botSettings?.botname || 'BUNNY MD',
+    connected: isConnected,
+    uptime: Math.floor(process.uptime())
+  })
 })
 
-// 3. SUPABASE SESSION SYNC - MFUMO WA VEX
+// 3. SUPABASE SYNC - THROTTLED, HAISYNC KILA SAA
 async function syncSessionToCloud() {
   try {
+    // Throttle: Max mara 1 kila dakika 10
+    const now = Date.now()
+    if (now - lastCredsSync < 600000) return
+    lastCredsSync = now
+
     if (!fs.existsSync('./session/creds.json')) return
-    
+
     const credsData = fs.readFileSync('./session/creds.json', 'utf-8')
     const base64 = Buffer.from(credsData).toString('base64')
-    
+
     await supabase.from('b_sessions').upsert({
       id: 'creds',
-      data: base64
+      data: base64,
+      updated_at: new Date().toISOString()
     })
     console.log('☁️ Session synced to Supabase')
   } catch (e) {
@@ -75,24 +88,16 @@ async function loadSessionFromCloud() {
   return false
 }
 
-// 4. WHATSAPP CONNECTION - MFUMO WA VEX + FIXES
+// 4. WHATSAPP CONNECTION - ANTI-SYNC, ANTI-BAD-MAC
 async function connectToWhatsApp() {
   try {
-    // Step 1: Load session kutoka Supabase kwenda local
-    const hasCloudSession = await loadSessionFromCloud()
-    
-    // Step 2: Tumia useMultiFileAuthState - HII NDIO SIRI YA VEX
+    await loadSessionFromCloud()
     const { state, saveCreds } = await useMultiFileAuthState('./session')
     const { version, isLatest } = await fetchLatestBaileysVersion()
     console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`)
 
     const hasSession = state.creds?.noiseKey ? true : false
-
-    if (!hasSession) {
-      console.log('🔍 No session found. QR will be generated for /pair.html')
-    } else {
-      console.log('🔄 Existing session found. Attempting to restore...')
-    }
+    console.log(hasSession ? '🔄 Restoring session...' : '🔍 New session. QR will generate')
 
     sock = makeWASocket({
       version,
@@ -103,29 +108,33 @@ async function connectToWhatsApp() {
         keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
       },
       browser: Browsers.ubuntu('BUNNY MD'),
-      connectTimeoutMs: 60000,
-      defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 10000,
-      emitOwnEvents: true,
-      fireInitQueries: true,
-      generateHighQualityLinkPreview: true,
+      // HIZI NDIO ZINAZUIA "SYNCING" NA "BAD MAC"
       syncFullHistory: false,
       markOnlineOnConnect: false,
-      retryRequestDelayMs: 250,
+      shouldIgnoreJid: jid => jid === 'status@broadcast' || jid.endsWith('@newsletter'),
+      fireInitQueries: false, // Inapunguza requests
+      generateHighQualityLinkPreview: false, // Inapunguza RAM
+      // Stable
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 0,
+      keepAliveIntervalMs: 20000,
+      emitOwnEvents: true,
+      retryRequestDelayMs: 500,
+      maxMsgRetryCount: 2,
       getMessage: async () => ({ conversation: '' })
     })
 
-    // 5. HANDLE CONNECTION UPDATES
+    // 5. CONNECTION UPDATES
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update
 
-      if (qr) {
+      if (qr && !isConnected) {
         qrString = qr
         try {
           const qrImage = await qrcode.toDataURL(qr)
           io.emit('qr', qrImage)
           io.emit('status', 'Scan QR or use Pair Code')
-          console.log('📱 New QR generated - check /pair.html page')
+          console.log('📱 QR ready at /pair.html')
         } catch (err) {
           console.log('QR generation failed:', err.message)
         }
@@ -137,14 +146,17 @@ async function connectToWhatsApp() {
         reconnectAttempts = 0
         io.emit('status', 'Connected')
         console.log('✅ WhatsApp connected successfully!')
-        await syncSessionToCloud() // Save session kwa Supabase
+        
+        // Pakua settings fresh kila ukiconnect
+        botSettings = await getBotSettings()
+        console.log('🔄 Fresh settings loaded. Prefix:', botSettings.prefix)
+        
+        await syncSessionToCloud()
         await sendConfirmationMessage()
       }
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut
-
         isConnected = false
         io.emit('status', 'Disconnected')
         console.log('Connection closed. Reason:', lastDisconnect?.error?.message)
@@ -155,44 +167,47 @@ async function connectToWhatsApp() {
           if (fs.existsSync('./session')) fs.rmSync('./session', { recursive: true, force: true })
           qrString = ''
           reconnectAttempts = 0
-          setTimeout(() => connectToWhatsApp(), 3000)
-        } else if (shouldReconnect) {
+          setTimeout(() => connectToWhatsApp(), 5000)
+        } else if (reconnectAttempts < MAX_RECONNECTS) {
           reconnectAttempts++
-          const delay = Math.min(reconnectAttempts * 5000, 30000)
-          console.log(`🔄 Reconnecting in ${delay/1000} seconds... Attempt ${reconnectAttempts}`)
+          const delay = Math.min(reconnectAttempts * 10000, 60000)
+          console.log(`🔄 Reconnecting in ${delay/1000}s... Attempt ${reconnectAttempts}/${MAX_RECONNECTS}`)
           setTimeout(() => connectToWhatsApp(), delay)
         } else {
-          console.log('⚠️ Connection closed. Restarting in 10 seconds...')
-          setTimeout(() => connectToWhatsApp(), 10000)
+          console.log('⚠️ Max reconnects reached. Waiting 5 minutes...')
+          reconnectAttempts = 0
+          setTimeout(() => connectToWhatsApp(), 300000)
         }
       }
     })
 
-    // 6. SAVE CREDS WHEN UPDATED
+    // 6. SAVE CREDS - THROTTLED
     sock.ev.on('creds.update', async () => {
       await saveCreds()
-      await syncSessionToCloud() // Sync kila creds ikibadilika
+      syncSessionToCloud() // Ina throttle ndani
     })
 
-    // 7. HANDLE ALL INCOMING MESSAGES
+    // 7. HANDLE MESSAGES
     sock.ev.on('messages.upsert', (m) => {
       handleMessages(sock, m, botSettings)
     })
 
   } catch (err) {
     console.error('Connection error:', err.message)
-    setTimeout(() => connectToWhatsApp(), 10000)
+    if (reconnectAttempts < MAX_RECONNECTS) {
+      reconnectAttempts++
+      setTimeout(() => connectToWhatsApp(), 15000)
+    }
   }
 }
 
-// 8. HANDLE PAIR CODE REQUEST FROM FRONTEND
+// 8. SOCKET.IO
 io.on('connection', (socket) => {
   if (qrString && !isConnected) {
     qrcode.toDataURL(qrString).then(qrImage => {
       socket.emit('qr', qrImage)
     }).catch(() => {})
   }
-
   socket.emit('status', isConnected ? 'Connected' : 'Waiting for connection')
 
   socket.on('request_pair_code', async (phoneNumber) => {
@@ -208,21 +223,23 @@ io.on('connection', (socket) => {
   })
 })
 
-// 9. CONFIRMATION MESSAGE
+// 9. CONFIRMATION - PUSHNAME FIXED
 async function sendConfirmationMessage() {
   const s = botSettings
   const imageUrl = 'https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png'
   const formatBool = (val) => val ? 'On' : 'Off'
+  
+  const botPushName = sock.user?.name || sock.user?.id?.split(':')[0] || 'User'
 
   const caption = `╭─⌈ *${s.botname}* ⌋
 │
-│ Hello ${sock.user.name || "User"}, bot is online.
+│ Hello ${botPushName}, bot is online.
 │ Owner: ${s.owner_name}
 │ Number: ${s.owner_number}
 │ Prefix: ${s.prefix}
 │
 │ *SYSTEM STATUS*
-│ Public Mode: ${formatBool(s.public_mode)}
+│ Public Mode: On ✅
 │ Anti-Link: ${formatBool(s.antilink)}
 │ Anti-Spam: ${formatBool(s.antispam)}
 │ Auto-Read: ${formatBool(s.autoread)}
@@ -236,33 +253,32 @@ async function sendConfirmationMessage() {
       image: { url: imageUrl },
       caption: caption
     })
-    console.log('Confirmation message sent to owner')
+    console.log('Confirmation sent to owner')
   } catch (err) {
     console.log('Failed to send confirmation:', err.message)
   }
 }
 
-// 10. MAIN START FUNCTION
+// 10. MAIN START
 async function startBot() {
   try {
     await initializeRouter()
     botSettings = await getBotSettings()
     if (!botSettings) {
-      console.error('❌ Failed to load bot settings from Supabase')
+      console.error('❌ Failed to load bot settings')
       process.exit(1)
     }
-    console.log('✅ Initial settings loaded. Prefix:', botSettings.prefix)
+    console.log('✅ Settings loaded. Prefix:', botSettings.prefix)
 
     listenSettingsUpdates((newSettings) => {
       botSettings = newSettings
-      console.log('🔥 Settings updated live. New prefix:', newSettings.prefix)
+      console.log('🔥 Settings updated live. Prefix:', newSettings.prefix)
     })
 
     await connectToWhatsApp()
 
     server.listen(PORT, () => {
-      console.log(`BUNNY MD Server running on port ${PORT}`)
-      console.log(`Pair page will be available at /pair.html on your Render URL`)
+      console.log(`🐰 BUNNY MD running on port ${PORT}`)
     })
 
   } catch (err) {
@@ -271,9 +287,8 @@ async function startBot() {
   }
 }
 
-// 11. START EVERYTHING
-startBot()
+// 11. ANTI-CRASH
+process.on('uncaughtException', (err) => console.error('Caught exception:', err.message))
+process.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason))
 
-// 12. ERROR HANDLING
-process.on('uncaughtException', (err) => console.error('Caught exception: ', err))
-process.on('unhandledRejection', (reason, promise) => console.error('Unhandled Rejection:', reason))
+startBot()

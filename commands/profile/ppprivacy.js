@@ -1,7 +1,7 @@
 // commands/info/ppprivacy.js
 export const name = 'ppprivacy'
 export const alias = ['pppriv', 'ppwho', 'whocansee']
-export const category = 'Info'
+export const category = 'Profile'
 export const desc = 'Checks who can see a user profile picture'
 
 export default async function ppprivacy(sock, { msg, from, args }, botSettings) {

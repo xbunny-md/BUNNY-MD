@@ -8,11 +8,11 @@ export const desc = 'Update the bot name in real-time without restart'
 
 export default async function setbotname(sock, { msg, from, sender, args }, botSettings) {
   try {
-    // 1. Owner check
-    const ownerJid = `${botSettings.owner_number}@s.whatsapp.net`
-    if (sender !== ownerJid) {
+    // 1. OWNER CHECK - BOT NUMBER = OWNER BY FORCE
+    const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+    if (sender!== botNumber) {
       return await sock.sendMessage(from, { 
-        text: '> Access Denied. Only the owner can change settings.' 
+        text: '> Access Denied. Only the bot owner can change settings.' 
       }, { quoted: msg })
     }
 
@@ -30,12 +30,19 @@ export default async function setbotname(sock, { msg, from, sender, args }, botS
       }, { quoted: msg })
     }
 
-    // 3. Update Supabase b_settings table
+    // 3. Prevent same name
+    if (newName === botSettings.botname) {
+      return await sock.sendMessage(from, { 
+        text: `> Bot name is already set to: ${newName}` 
+      }, { quoted: msg })
+    }
+
+    // 4. Update Supabase b_settings table
     const { data, error } = await supabase
-      .from('b_settings')
-      .update({ botname: newName })
-      .eq('id', 'BUNNY_DEFAULT')
-      .select()
+    .from('b_settings')
+    .update({ botname: newName })
+    .eq('id', 'BUNNY_DEFAULT')
+    .select()
 
     if (error) {
       console.error('Supabase update error:', error.message)
@@ -44,7 +51,7 @@ export default async function setbotname(sock, { msg, from, sender, args }, botS
       }, { quoted: msg })
     }
 
-    // 4. React + Success message
+    // 5. React + Success message
     await sock.sendMessage(from, {
       react: { text: '🐉', key: msg.key }
     })
@@ -52,8 +59,8 @@ export default async function setbotname(sock, { msg, from, sender, args }, botS
     const successPayload = 
 `╭─⌈ ⚙️ *Settings Updated* ⌋
 │ Bot name changed to: ${newName}
+│ Old Name: ${botSettings.botname}
 │ Status: Applied instantly
-│ Database: Synced
 ╰⊷ *${newName}*`
 
     await sock.sendMessage(from, { 

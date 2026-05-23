@@ -1,5 +1,5 @@
 // commands/reactions/kick.js
-export const name = 'kick'
+export const name = 'rkick'
 export const alias = ['boot', 'punt']
 export const category = 'Reactions'
 export const desc = 'Animated kick reaction with 15 emoji edits on command message'

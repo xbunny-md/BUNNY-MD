@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase.js'
 
 export const name = 'ppupload'
 export const alias = ['setpp', 'uploadpp', 'changepp']
-export const category = 'Owner'
+export const category = 'Profile'
 export const desc = 'Uploads/changes bot profile picture'
 
 export default async function ppupload(sock, { msg, from, sender }, botSettings) {

@@ -11,7 +11,7 @@
   "author": "Lupin Starnley",
   "license": "ISC",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.x"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc.9",

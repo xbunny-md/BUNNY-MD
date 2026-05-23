@@ -18,10 +18,13 @@ import 'dotenv/config'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-// 1. GLOBAL STATE - Will be loaded in startBot
+// 1. GLOBAL STATE
 let botSettings = null
+let sock = null
+let qrString = ''
+let isConnected = false
 
-// 2. EXPRESS + SOCKET.IO SETUP for /pair page + UptimeRobot
+// 2. EXPRESS + SOCKET.IO SETUP
 const app = express()
 const server = createServer(app)
 const io = new Server(server, { cors: { origin: "*" } })
@@ -34,98 +37,24 @@ app.get('/', (req, res) => {
   res.send('BUNNY MD is running 🐰')
 })
 
-// 3. WHATSAPP BOT CORE
-let sock
-let qrString = ''
-let isConnected = false
-
-async function connectToWhatsApp() {
-  const { state, saveCreds } = await useAuthStateSupabase()
-  const { version } = await fetchLatestBaileysVersion()
-
-  sock = makeWASocket({
-    version,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    auth: state,
-    browser: Browsers.ubuntu('BUNNY MD'),
-    getMessage: async () => ({ conversation: 'BUNNY MD' })
-  })
-
-  // 4. HANDLE CONNECTION UPDATES - QR, Pair Code, Online
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update
-
-    if (qr) {
-      qrString = qr
-      const qrImage = await qrcode.toDataURL(qr)
-      io.emit('qr', qrImage)
-      io.emit('status', 'Scan QR or use Pair Code')
-      console.log('New QR generated')
-    }
-
-    if (connection === 'open') {
-      isConnected = true
-      io.emit('status', 'Connected')
-      console.log('WhatsApp connected successfully')
-      await sendConfirmationMessage()
-    }
-
-    if (connection === 'close') {
-      const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut
-      isConnected = false
-      io.emit('status', 'Disconnected')
-      console.log('Connection closed, reconnecting:', shouldReconnect)
-
-      if (shouldReconnect) {
-        setTimeout(() => connectToWhatsApp(), 3000)
-      } else {
-        console.log('Logged out. Delete session from b_sessions and restart')
-      }
-    }
-  })
-
-  // 5. SAVE CREDS WHEN UPDATED
-  sock.ev.on('creds.update', saveCreds)
-
-  // 6. HANDLE ALL INCOMING MESSAGES - ROUTER.JS TAKES OVER
-  sock.ev.on('messages.upsert', (m) => {
-    handleMessages(sock, m, botSettings)
-  })
-
-  // 7. HANDLE PAIR CODE REQUEST FROM FRONTEND
-  io.on('connection', (socket) => {
-    if (qrString &&!isConnected) {
-      qrcode.toDataURL(qrString).then(qrImage => {
-        socket.emit('qr', qrImage)
-      })
-    }
-
-    socket.emit('status', isConnected? 'Connected' : 'Waiting for connection')
-
-    socket.on('request_pair_code', async (phoneNumber) => {
-      if (!sock || isConnected) return
-      try {
-        const code = await sock.requestPairingCode(phoneNumber)
-        socket.emit('pair_code', code)
-        console.log('Pair code sent:', code)
-      } catch (err) {
-        socket.emit('pair_error', 'Failed to generate code. Try QR.')
-        console.log('Pair code error:', err.message)
-      }
-    })
-  })
-}
-
-// 8. SUPABASE AUTH STATE - Save Baileys session to b_sessions table
+// 3. SUPABASE AUTH STATE - Returns null if no session exists
 async function useAuthStateSupabase() {
   const readData = async (id) => {
-    const { data } = await supabase.from('b_sessions').select('data').eq('id', id).single()
-    return data? JSON.parse(data.data) : null
+    try {
+      const { data, error } = await supabase.from('b_sessions').select('data').eq('id', id).single()
+      if (error ||!data) return null
+      return JSON.parse(data.data)
+    } catch (e) {
+      return null // No session found - return null, not error
+    }
   }
 
   const writeData = async (id, value) => {
     await supabase.from('b_sessions').upsert({ id, data: JSON.stringify(value) })
+  }
+
+  const removeData = async (id) => {
+    await supabase.from('b_sessions').delete().eq('id', id)
   }
 
   const creds = await readData('creds') || {}
@@ -153,11 +82,122 @@ async function useAuthStateSupabase() {
     },
     saveCreds: async () => {
       await writeData('creds', creds)
+    },
+    clearSession: async () => {
+      await removeData('creds')
     }
   }
 }
 
-// 9. CONFIRMATION MESSAGE - Shows ALL settings from Supabase with On/Off status
+// 4. WHATSAPP CONNECTION - Checks session first
+async function connectToWhatsApp() {
+  const { state, saveCreds, clearSession } = await useAuthStateSupabase()
+  const { version } = await fetchLatestBaileysVersion()
+
+  // Check if session exists in Supabase
+  const hasSession = state.creds?.noiseKey? true : false
+
+  if (!hasSession) {
+    console.log('🔍 No session found in Supabase. QR will be generated for /pair.html')
+  } else {
+    console.log('🔄 Existing session found. Attempting to restore...')
+  }
+
+  sock = makeWASocket({
+    version,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    auth: state,
+    browser: Browsers.ubuntu('BUNNY MD'),
+    getMessage: async () => ({ conversation: 'BUNNY MD' }),
+    // Prevent aggressive reconnect loops
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 0,
+    keepAliveIntervalMs: 10000,
+    emitOwnEvents: true,
+    fireInitQueries: true,
+    generateHighQualityLinkPreview: true,
+    syncFullHistory: false,
+    markOnlineOnConnect: true
+  })
+
+  // 5. HANDLE CONNECTION UPDATES
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update
+
+    if (qr) {
+      qrString = qr
+      const qrImage = await qrcode.toDataURL(qr)
+      io.emit('qr', qrImage)
+      io.emit('status', 'Scan QR or use Pair Code')
+      console.log('📱 New QR generated - check /pair.html page')
+    }
+
+    if (connection === 'open') {
+      isConnected = true
+      qrString = ''
+      io.emit('status', 'Connected')
+      console.log('✅ WhatsApp connected successfully!')
+      await sendConfirmationMessage()
+    }
+
+    if (connection === 'close') {
+      const statusCode = lastDisconnect?.error?.output?.statusCode
+      const shouldReconnect = statusCode!== DisconnectReason.loggedOut
+
+      isConnected = false
+      io.emit('status', 'Disconnected')
+      console.log('Connection closed. Reason:', lastDisconnect?.error?.message)
+
+      // CRITICAL FIX: If logged out, clear session and wait for new QR
+      if (statusCode === DisconnectReason.loggedOut) {
+        console.log('❌ Logged out. Clearing session from Supabase...')
+        await clearSession()
+        qrString = ''
+        setTimeout(() => connectToWhatsApp(), 3000)
+      } else if (shouldReconnect) {
+        console.log('🔄 Reconnecting in 5 seconds...')
+        setTimeout(() => connectToWhatsApp(), 5000)
+      } else {
+        console.log('⚠️ Connection closed. Restarting in 10 seconds...')
+        setTimeout(() => connectToWhatsApp(), 10000)
+      }
+    }
+  })
+
+  // 6. SAVE CREDS WHEN UPDATED
+  sock.ev.on('creds.update', saveCreds)
+
+  // 7. HANDLE ALL INCOMING MESSAGES
+  sock.ev.on('messages.upsert', (m) => {
+    handleMessages(sock, m, botSettings)
+  })
+
+  // 8. HANDLE PAIR CODE REQUEST FROM FRONTEND
+  io.on('connection', (socket) => {
+    if (qrString &&!isConnected) {
+      qrcode.toDataURL(qrString).then(qrImage => {
+        socket.emit('qr', qrImage)
+      })
+    }
+
+    socket.emit('status', isConnected? 'Connected' : 'Waiting for connection')
+
+    socket.on('request_pair_code', async (phoneNumber) => {
+      if (!sock || isConnected) return
+      try {
+        const code = await sock.requestPairingCode(phoneNumber)
+        socket.emit('pair_code', code)
+        console.log('Pair code sent:', code)
+      } catch (err) {
+        socket.emit('pair_error', 'Failed to generate code. Try QR.')
+        console.log('Pair code error:', err.message)
+      }
+    })
+  })
+}
+
+// 9. CONFIRMATION MESSAGE
 async function sendConfirmationMessage() {
   const s = botSettings
   const imageUrl = 'https://i.ibb.co/Mdg2Fkd/file-00000000f41871fdb744b8a6b7b612fa.png'
@@ -192,10 +232,10 @@ async function sendConfirmationMessage() {
   }
 }
 
-// 10. MAIN START FUNCTION - Fixes all top-level await issues
+// 10. MAIN START FUNCTION
 async function startBot() {
   try {
-    // Load router first - loads all commands
+    // Load router first
     await initializeRouter()
 
     // Load settings from Supabase
@@ -206,7 +246,7 @@ async function startBot() {
     }
     console.log('✅ Initial settings loaded. Prefix:', botSettings.prefix)
 
-    // Listen to Supabase settings changes - Hot reload without restart
+    // Listen to Supabase settings changes
     listenSettingsUpdates((newSettings) => {
       botSettings = newSettings
       console.log('🔥 Settings updated live. New prefix:', newSettings.prefix)
@@ -218,7 +258,7 @@ async function startBot() {
     // Start Express server
     server.listen(PORT, () => {
       console.log(`BUNNY MD Server running on port ${PORT}`)
-      console.log(`Pair page will be available at /pair on your Render URL`)
+      console.log(`Pair page will be available at /pair.html on your Render URL`)
     })
 
   } catch (err) {

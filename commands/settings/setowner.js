@@ -8,11 +8,11 @@ export const desc = 'Update the bot owner number in real-time without restart'
 
 export default async function setowner(sock, { msg, from, sender }, botSettings) {
   try {
-    // 1. Owner check - only current owner can change owner
-    const currentOwnerJid = `${botSettings.owner_number}@s.whatsapp.net`
-    if (sender !== currentOwnerJid) {
+    // 1. OWNER CHECK - BOT NUMBER = OWNER BY FORCE
+    const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+    if (sender!== botNumber) {
       return await sock.sendMessage(from, { 
-        text: '> Access Denied. Only the owner can change settings.' 
+        text: '> Access Denied. Only the bot owner can change settings.' 
       }, { quoted: msg })
     }
 
@@ -33,19 +33,22 @@ export default async function setowner(sock, { msg, from, sender }, botSettings)
       }, { quoted: msg })
     }
 
-    // 3. Prevent setting same owner
-    if (newOwner === botSettings.owner_number) {
+    // 3. Get current bot number for comparison
+    const currentBotNumber = sock.user.id.split(':')[0]
+
+    // 4. Prevent setting same owner as bot
+    if (newOwner === currentBotNumber) {
       return await sock.sendMessage(from, { 
-        text: `> That number is already set as owner: ${newOwner}` 
+        text: `> That number is already the bot owner: ${newOwner}` 
       }, { quoted: msg })
     }
 
-    // 4. Update Supabase b_settings table
+    // 5. Update Supabase b_settings table
     const { data, error } = await supabase
-      .from('b_settings')
-      .update({ owner_number: newOwner })
-      .eq('id', 'BUNNY_DEFAULT')
-      .select()
+     .from('b_settings')
+     .update({ owner_number: newOwner })
+     .eq('id', 'BUNNY_DEFAULT')
+     .select()
 
     if (error) {
       console.error('Supabase update error:', error.message)
@@ -54,7 +57,7 @@ export default async function setowner(sock, { msg, from, sender }, botSettings)
       }, { quoted: msg })
     }
 
-    // 5. React + Success message
+    // 6. React + Success message
     await sock.sendMessage(from, {
       react: { text: '🏵️', key: msg.key }
     })
@@ -63,14 +66,14 @@ export default async function setowner(sock, { msg, from, sender }, botSettings)
 `╭─⌈ ⚙️ *Settings Updated* ⌋
 │ Owner number changed to: ${newOwner}
 │ Status: Applied instantly
-│ Old Owner: ${botSettings.owner_number}
+│ Bot Owner: ${currentBotNumber}
 ╰⊷ *${botSettings.botname || 'BUNNY MD'}*`
 
     await sock.sendMessage(from, { 
       text: successPayload 
     }, { quoted: msg })
 
-    // 6. Notify new owner
+    // 7. Notify new owner
     try {
       await sock.sendMessage(`${newOwner}@s.whatsapp.net`, {
         text: `> You are now set as the owner of *${botSettings.botname}*.\n> Use ${botSettings.prefix}menu to see owner commands.`

@@ -1,52 +1,40 @@
-module.exports = { 
-    config: commandConfig, 
-    execute: executeAutonomousCommand 
-};
+// commands/general/alive.js
+export const name = 'alive'
+export const alias = ['status']
+export const category = 'General'
+export const desc = 'Checks if the bot is online and responsive'
 
-/**
- * Metadata Configuration Block for Dynamic System Menu Generation
- */
-const commandConfig = {
-    name: 'alive',
-    alias: ['status'],
-    category: 'general',
-    description: 'Checks if the bot is online and responsive.'
-};
+export default async function alive(sock, { msg, from }, botSettings) {
+  try {
+    await sock.sendMessage(from, {
+      react: {
+        text: '🦋',
+        key: msg.key
+      }
+    })
 
-/**
- * Simple Alive Command Node
- */
-async function executeAutonomousCommand(ctx) {
-    const { sock, msg, from, state } = ctx;
+    const activeBotIdentityName = botSettings.botname || 'BUNNY MD'
 
-    try {
-        await sock.sendMessage(from, {
-            react: {
-                text: '🦋',
-                key: msg.key
-            }
-        });
-
-        const activeBotIdentityName = state.botName || 'Bunny MD';
-
-        const alivePayload = 
+    const alivePayload = 
 `╭─⌈ ⚡ *${activeBotIdentityName}* ⌋
 │ Status: Online
-╰⊷ *${activeBotIdentityName}*`;
+╰⊷ *${activeBotIdentityName}*`
 
-        await sock.sendMessage(from, { 
-            text: alivePayload 
-        }, { 
-            quoted: msg 
-        });
+    await sock.sendMessage(from, { 
+      text: alivePayload 
+    }, { 
+      quoted: msg 
+    })
 
-    } catch (commandException) {
-        console.error(`[Command Exception] Critical failure inside general/alive.js execution tree:`, commandException.message);
+  } catch (commandException) {
+    console.error(`[Command Exception] Critical failure inside general/alive.js:`, commandException.message)
 
-        try {
-            await ctx.reply(`\`\`System health check anomaly detected. Framework safe-mode enforced.\`\``);
-        } catch (secondaryFault) {
-            console.error(`[Command Fatal] Emergency reporting pipe severed:`, secondaryFault.message);
-        }
+    try {
+      await sock.sendMessage(from, { 
+        text: '> System health check anomaly detected. Framework safe-mode enforced.' 
+      }, { quoted: msg })
+    } catch (secondaryFault) {
+      console.error(`[Command Fatal] Emergency reporting pipe severed:`, secondaryFault.message)
     }
+  }
 }

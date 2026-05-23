@@ -8,11 +8,11 @@ export const desc = 'Update the bot command prefix in real-time without restart'
 
 export default async function setprefix(sock, { msg, from, sender }, botSettings) {
   try {
-    // 1. Owner check
-    const ownerJid = `${botSettings.owner_number}@s.whatsapp.net`
-    if (sender !== ownerJid) {
+    // 1. OWNER CHECK - BOT NUMBER = OWNER BY FORCE
+    const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+    if (sender!== botNumber) {
       return await sock.sendMessage(from, { 
-        text: '> Access Denied. Only the owner can change settings.' 
+        text: '> Access Denied. Only the bot owner can change settings.' 
       }, { quoted: msg })
     }
 
@@ -23,7 +23,7 @@ export default async function setprefix(sock, { msg, from, sender }, botSettings
 
     if (!newPrefix) {
       return await sock.sendMessage(from, { 
-        text: `> Usage: ${botSettings.prefix}setprefix <new_prefix>\n> Example: ${botSettings.prefix}setprefix !\n> Current: ${botSettings.prefix}` 
+        text: `> Usage: ${botSettings.prefix}setprefix <new_prefix>\n> Example: ${botSettings.prefix}setprefix!\n> Current: ${botSettings.prefix}` 
       }, { quoted: msg })
     }
 
@@ -37,7 +37,7 @@ export default async function setprefix(sock, { msg, from, sender }, botSettings
     const blockedPrefixes = ['/', '@', '#']
     if (blockedPrefixes.includes(newPrefix)) {
       return await sock.sendMessage(from, { 
-        text: `> Prefix "${newPrefix}" is blocked. Use symbols like . ! $ % &` 
+        text: `> Prefix "${newPrefix}" is blocked. Use symbols like.! $ % &` 
       }, { quoted: msg })
     }
 
@@ -50,10 +50,10 @@ export default async function setprefix(sock, { msg, from, sender }, botSettings
 
     // 5. Update Supabase b_settings table
     const { data, error } = await supabase
-      .from('b_settings')
-      .update({ prefix: newPrefix })
-      .eq('id', 'BUNNY_DEFAULT')
-      .select()
+     .from('b_settings')
+     .update({ prefix: newPrefix })
+     .eq('id', 'BUNNY_DEFAULT')
+     .select()
 
     if (error) {
       console.error('Supabase update error:', error.message)
@@ -62,7 +62,7 @@ export default async function setprefix(sock, { msg, from, sender }, botSettings
       }, { quoted: msg })
     }
 
-    // 6. React + Success message na 🧵 thread emoji
+    // 6. React + Success message
     await sock.sendMessage(from, {
       react: { text: '🌀', key: msg.key }
     })

@@ -1,0 +1,158 @@
+// commands/downloader/tiktok.js
+import axios from 'axios'
+
+export const name = 'tiktok'
+export const alias = ['tt', 'ttdl', 'tiktokdl']
+export const category = 'Downloader'
+export const desc = 'Download TikTok videos without watermark in HD'
+
+export default async function tiktok(sock, { msg, from, args }, botSettings) {
+  try {
+    // 1. Extract link from args, message text, or quoted message
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const quotedText = quoted?.conversation || quoted?.extendedTextMessage?.text || ''
+    const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
+    const textAfterCmd = args.join(' ')
+
+    const tiktokRegex = /(https?:\/\/(?:www\.|vm\.|vt\.)?tiktok\.com\/[^\s]+)/gi
+    let link = textAfterCmd.match(tiktokRegex)?.[0] ||
+               messageText.match(tiktokRegex)?.[0] ||
+               quotedText.match(tiktokRegex)?.[0]
+
+    if (!link) {
+      return await sock.sendMessage(from, {
+        text: `> Usage: ${botSettings.prefix}tiktok <link>\n> Reply to a message with TikTok link\n> Example: ${botSettings.prefix}tt https://vt.tiktok.com/abc123`
+      }, { quoted: msg })
+    }
+
+    // 2. React first - BUNNY STYLE 🏹
+    await sock.sendMessage(from, {
+      react: { text: '🏹', key: msg.key }
+    })
+
+    const processingMsg = await sock.sendMessage(from, {
+      text: `> Processing TikTok link...`
+    }, { quoted: msg })
+
+    // 3. Resolve short links - vm.tiktok.com / vt.tiktok.com
+    if (link.includes('vm.tiktok.com') || link.includes('vt.tiktok.com')) {
+      try {
+        const res = await axios.get(link, {
+          maxRedirects: 5,
+          timeout: 10000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        })
+        link = res.request.res.responseUrl
+      } catch (err) {
+        throw new Error('Failed to resolve short link')
+      }
+    }
+
+    let videoData = null
+
+    // 4. Primary API - tikwm.com
+    try {
+      const res1 = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(link)}`, {
+        timeout: 15000
+      })
+      if (res1.data?.data?.play) {
+        videoData = {
+          url: res1.data.data.play,
+          title: res1.data.data.title || 'TikTok Video',
+          author: res1.data.data.author?.nickname || 'Unknown',
+          duration: res1.data.data.duration || 0,
+          thumbnail: res1.data.data.cover || res1.data.data.origin_cover,
+          views: res1.data.data.play_count || 0
+        }
+      }
+    } catch (e) {
+      console.log('[TIKTOK] Primary API failed, trying fallback...')
+    }
+
+    // 5. Fallback API - tiklydown.eu.org
+    if (!videoData) {
+      try {
+        const res2 = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(link)}`, {
+          timeout: 15000
+        })
+        if (res2.data?.video?.noWatermark) {
+          videoData = {
+            url: res2.data.video.noWatermark,
+            title: res2.data.title || 'TikTok Video',
+            author: res2.data.author?.name || 'Unknown',
+            duration: res2.data.video.duration || 0,
+            thumbnail: res2.data.cover,
+            views: res2.data.stats?.playCount || 0
+          }
+        }
+      } catch (e) {
+        console.log('[TIKTOK] Fallback API failed')
+      }
+    }
+
+    if (!videoData?.url) {
+      throw new Error('Video not found or unavailable')
+    }
+
+    // 6. Format duration
+    const formatDuration = (seconds) => {
+      const min = Math.floor(seconds / 60)
+      const sec = seconds % 60
+      return `${min}:${sec.toString().padStart(2, '0')}`
+    }
+
+    // 7. Send info card - BUNNY STYLE
+    const infoPayload = `╭─⌈ 🎬 *${botSettings.botname || 'BUNNY MD'}* ⌋
+│ Title: ${videoData.title.slice(0, 40)}
+│ Author: @${videoData.author}
+│ Duration: ${formatDuration(videoData.duration)}
+│ Views: ${videoData.views.toLocaleString()}
+│ Quality: HD No Watermark
+╰⊷ Downloading...`
+
+    if (videoData.thumbnail) {
+      await sock.sendMessage(from, {
+        image: { url: videoData.thumbnail },
+        caption: infoPayload
+      }, { quoted: msg })
+    }
+
+    // 8. Send video
+    await sock.sendMessage(from, {
+      video: { url: videoData.url },
+      mimetype: 'video/mp4',
+      caption: `> Done. Enjoy 🐰`,
+      contextInfo: {
+        externalAdReply: {
+          title: videoData.title.slice(0, 60),
+          body: `${botSettings.botname} • TikTok Downloader`,
+          thumbnailUrl: videoData.thumbnail,
+          mediaType: 2,
+          renderLargerThumbnail: true,
+          sourceUrl: link
+        }
+      }
+    }, { quoted: msg })
+
+    // 9. Delete processing message and react done ✅
+    await sock.sendMessage(from, { delete: processingMsg.key })
+    await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+
+  } catch (error) {
+    console.error('[TIKTOK ERROR]', error.message)
+
+    let errorMsg = '> Failed to download TikTok video'
+    if (error.message.includes('unavailable')) {
+      errorMsg = '> Video is unavailable or private'
+    } else if (error.message.includes('resolve')) {
+      errorMsg = '> Invalid TikTok link'
+    } else if (error.message.includes('timeout')) {
+      errorMsg = '> Server timeout. Try again'
+    }
+
+    await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+  }
+}

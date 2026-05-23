@@ -1,0 +1,190 @@
+// commands/downloader/facebook.js
+import axios from 'axios'
+
+export const name = 'facebook'
+export const alias = ['fb', 'fbdl', 'facebookdl']
+export const category = 'Downloader'
+export const desc = 'Download Facebook Videos, Reels & Watch in HD'
+
+export default async function facebook(sock, { msg, from, args }, botSettings) {
+  try {
+    // 1. Extract link from args, message text, or quoted message
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const quotedText = quoted?.conversation || quoted?.extendedTextMessage?.text || ''
+    const messageText = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
+    const textAfterCmd = args.join(' ')
+
+    const fbRegex = /(https?:\/\/(?:www\.|web\.|m\.)?facebook\.com\/(?:watch\/?\?v=|reel\/|share\/v\/|share\/r\/|video\.php\?v=|[^\/]+\/videos\/)[^\s]+|https?:\/\/fb\.watch\/[^\s]+)/gi
+    let link = textAfterCmd.match(fbRegex)?.[0] ||
+               messageText.match(fbRegex)?.[0] ||
+               quotedText.match(fbRegex)?.[0]
+
+    if (!link) {
+      return await sock.sendMessage(from, {
+        text: `> Usage: ${botSettings.prefix}fb <link>\n> Reply to a message with Facebook link\n> Example: ${botSettings.prefix}fb https://fb.watch/abc123`
+      }, { quoted: msg })
+    }
+
+    // 2. React first - BUNNY BEAST MODE 🔗
+    await sock.sendMessage(from, {
+      react: { text: '🔗', key: msg.key }
+    })
+
+    const processingMsg = await sock.sendMessage(from, {
+      text: `> Processing Facebook link...`
+    }, { quoted: msg })
+
+    let videoData = null
+
+    // 3. Primary API - SaveFrom Helper
+    try {
+      const res1 = await axios.get(`https://api.savefrom.net/api/convert`, {
+        params: { url: link },
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      })
+
+      if (res1.data?.url?.length > 0) {
+        const hdVideo = res1.data.url.find(v => v.quality === '720' || v.quality === '720p')
+        const sdVideo = res1.data.url.find(v => v.quality === '360' || v.quality === '360p')
+        const bestVideo = hdVideo || sdVideo || res1.data.url[0]
+
+        videoData = {
+          url: bestVideo.url,
+          quality: bestVideo.quality || 'SD',
+          title: res1.data.meta?.title || 'Facebook Video',
+          thumbnail: res1.data.thumb || res1.data.meta?.thumbnail,
+          duration: res1.data.meta?.duration || 0
+        }
+      }
+    } catch (e) {
+      console.log('[FB] Primary API failed, trying fallback...')
+    }
+
+    // 4. Fallback API 1 - GetFVid
+    if (!videoData) {
+      try {
+        const res2 = await axios.post('https://www.getfvid.com/downloader',
+          `url=${encodeURIComponent(link)}`, {
+          timeout: 15000,
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        })
+
+        const hdMatch = res2.data.match(/href="(https:\/\/[^"]+)"[^>]*>Download in HD Quality<\/a>/)
+        const sdMatch = res2.data.match(/href="(https:\/\/[^"]+)"[^>]*>Download in Low Quality<\/a>/)
+        const thumbMatch = res2.data.match(/<img src="(https:\/\/[^"]+)"[^>]*class="img-thumbnail"/)
+
+        if (hdMatch || sdMatch) {
+          videoData = {
+            url: hdMatch? hdMatch[1] : sdMatch[1],
+            quality: hdMatch? 'HD 720p' : 'SD 360p',
+            title: 'Facebook Video',
+            thumbnail: thumbMatch? thumbMatch[1] : null,
+            duration: 0
+          }
+        }
+      } catch (e) {
+        console.log('[FB] Fallback 1 failed, trying fallback 2...')
+      }
+    }
+
+    // 5. Fallback API 2 - FBDOWN
+    if (!videoData) {
+      try {
+        const res3 = await axios.get(`https://api.fbdown.net/api`, {
+          params: { url: link },
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        })
+
+        if (res3.data?.hd || res3.data?.sd) {
+          videoData = {
+            url: res3.data.hd || res3.data.sd,
+            quality: res3.data.hd? 'HD 720p' : 'SD 360p',
+            title: res3.data.title || 'Facebook Video',
+            thumbnail: res3.data.thumbnail,
+            duration: res3.data.duration || 0
+          }
+        }
+      } catch (e) {
+        console.log('[FB] Fallback 2 failed')
+      }
+    }
+
+    if (!videoData?.url) {
+      throw new Error('Video not found or private')
+    }
+
+    // 6. Format duration
+    const formatDuration = (seconds) => {
+      if (!seconds || seconds === 0) return 'Unknown'
+      const min = Math.floor(seconds / 60)
+      const sec = seconds % 60
+      return `${min}:${sec.toString().padStart(2, '0')}`
+    }
+
+    // 7. Send info card - BUNNY STYLE
+    const infoPayload = `╭─⌈ 🔗 *${botSettings.botname || 'BUNNY MD'}* ⌋
+│ Title: ${videoData.title.slice(0, 40)}
+│ Quality: ${videoData.quality}
+│ Duration: ${formatDuration(videoData.duration)}
+│ Source: Facebook
+╰⊷ Downloading...`
+
+    if (videoData.thumbnail) {
+      await sock.sendMessage(from, {
+        image: { url: videoData.thumbnail },
+        caption: infoPayload
+      }, { quoted: msg })
+    } else {
+      await sock.sendMessage(from, {
+        text: infoPayload
+      }, { quoted: msg })
+    }
+
+    // 8. Send video
+    await sock.sendMessage(from, {
+      video: { url: videoData.url },
+      mimetype: 'video/mp4',
+      caption: `> Done. Enjoy 🐰`,
+      contextInfo: {
+        externalAdReply: {
+          title: videoData.title.slice(0, 60),
+          body: `${botSettings.botname} • FB Downloader`,
+          thumbnailUrl: videoData.thumbnail,
+          mediaType: 2,
+          renderLargerThumbnail: true,
+          sourceUrl: link
+        }
+      }
+    }, { quoted: msg })
+
+    // 9. Delete processing message and react done ✅
+    await sock.sendMessage(from, { delete: processingMsg.key })
+    await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+
+  } catch (error) {
+    console.error('[FB ERROR]', error.message)
+
+    let errorMsg = '> Failed to download Facebook video'
+    if (error.message.includes('private')) {
+      errorMsg = '> Video is private or unavailable'
+    } else if (error.message.includes('timeout')) {
+      errorMsg = '> Server timeout. Try again'
+    } else if (error.message.includes('not found')) {
+      errorMsg = '> Invalid Facebook link or video deleted'
+    } else if (error.message.includes('login')) {
+      errorMsg = '> Video requires login to view'
+    }
+
+    await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+  }
+}

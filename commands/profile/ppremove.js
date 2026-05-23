@@ -1,7 +1,7 @@
 // commands/profile/ppremove.js
 export const name = 'ppremove'
 export const alias = ['delpp', 'removepp', 'clearpp']
-export const category = 'Owner'
+export const category = 'Profile'
 export const desc = 'Removes your bot profile picture'
 
 export default async function ppremove(sock, { msg, from, sender }, botSettings) {

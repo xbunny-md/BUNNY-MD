@@ -205,7 +205,7 @@ export default async function twitterstalk(sock, { msg, from, args }, botSetting
       infoCard += `\n│ 🔗 *Website:* ${userData.website}`
     }
 
-    infoCard += `\n│\n╰⊷ *USAFI WA BUNNY MD*`
+    infoCard += `\n│\n╰⊷ *BUNNY MD*`
 
     // 10. Send profile with avatar - CLEAN NO PROCESS MSG
     if (userData.avatar) {

@@ -1,0 +1,131 @@
+// commands/fun/iq.js
+export const name = 'iq'
+export const alias = ['iqtest', 'intelligence', 'brain', 'smart']
+export const category = 'Fun'
+export const desc = 'Check someone\'s IQ level for fun'
+
+export default async function iq(sock, { msg, from, mentionedJid }, botSettings) {
+  try {
+    // 1. React first - BUNNY BRAIN MODE 🧠
+    await sock.sendMessage(from, {
+      react: { text: '🧠', key: msg.key }
+    })
+
+    // 2. Get target user
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.participant
+    const mentions = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid
+    let target = mentionedJid?.[0] || mentions?.[0] || quoted || msg.key.participant || msg.sender
+
+    // 3. Generate random IQ between 50-200
+    const iqScore = Math.floor(Math.random() * 151) + 50
+
+    // 4. Get rating message based on IQ
+    let ratingMsg = ''
+    let ratingEmoji = ''
+    let description = ''
+    let category = ''
+
+    if (iqScore >= 180) {
+      ratingMsg = 'COSMIC GENIUS'
+      ratingEmoji = '🌌'
+      description = 'Beyond human comprehension'
+      category = 'Transcendent'
+    } else if (iqScore >= 160) {
+      ratingMsg = 'EINSTEIN LEVEL'
+      ratingEmoji = '👑'
+      description = 'Nobel Prize material'
+      category = 'Genius'
+    } else if (iqScore >= 140) {
+      ratingMsg = 'GENIUS'
+      ratingEmoji = '🧬'
+      description = 'Certified big brain'
+      category = 'Genius'
+    } else if (iqScore >= 130) {
+      ratingMsg = 'GIFTED'
+      ratingEmoji = '🎓'
+      description = 'Mensa qualified'
+      category = 'Very Superior'
+    } else if (iqScore >= 120) {
+      ratingMsg = 'VERY SMART'
+      ratingEmoji = '🧠'
+      description = 'Superior intelligence'
+      category = 'Superior'
+    } else if (iqScore >= 110) {
+      ratingMsg = 'ABOVE AVERAGE'
+      ratingEmoji = '💡'
+      description = 'Sharp mind'
+      category = 'High Average'
+    } else if (iqScore >= 90) {
+      ratingMsg = 'AVERAGE'
+      ratingEmoji = '😐'
+      description = 'Normal human brain'
+      category = 'Average'
+    } else if (iqScore >= 80) {
+      ratingMsg = 'BELOW AVERAGE'
+      ratingEmoji = '🤔'
+      description = 'Struggling a bit'
+      category = 'Low Average'
+    } else if (iqScore >= 70) {
+      ratingMsg = 'BORDERLINE'
+      ratingEmoji = '📉'
+      description = 'Needs extra help'
+      category = 'Borderline'
+    } else if (iqScore >= 60) {
+      ratingMsg = 'LOW'
+      ratingEmoji = '🐌'
+      description = 'Thinking is hard'
+      category = 'Extremely Low'
+    } else {
+      ratingMsg = 'CRITICAL'
+      ratingEmoji = '🚨'
+      description = 'Emergency brain cells needed'
+      category = 'Severely Low'
+    }
+
+    // 5. Get target name
+    let targetName = 'You'
+    if (target!== msg.sender) {
+      targetName = `@${target.split('@')[0]}`
+    }
+
+    // 6. IQ Bar visual
+    const maxIQ = 200
+    const barLength = 10
+    const filledBars = Math.floor((iqScore / maxIQ) * barLength)
+    const emptyBars = barLength - filledBars
+    const iqBar = '█'.repeat(filledBars) + '░'.repeat(emptyBars)
+
+    // 7. Build caption - CLEAN & SMART
+    let caption = `╭─⌈ 🧠 *${botSettings.botname || 'BUNNY MD'}* ⌋
+│ *IQ Test Results*
+│
+│ 🎯 *Target:* ${targetName}
+│
+│ ${ratingEmoji} *IQ Score:* ${iqScore}
+│ 🏆 *Rank:* ${ratingMsg}
+│ 📊 *Category:* ${category}
+│
+│ ${iqBar} ${iqScore}/200
+│
+│ 💬 *Analysis:* ${description}
+│
+╰⊷ *Powered By Bunny Tech*`
+
+    // 8. Send result with mention
+    await sock.sendMessage(from, {
+      text: caption,
+      mentions: target!== msg.sender? [target] : []
+    }, { quoted: msg })
+
+    // 9. React done ✅
+    await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+
+  } catch (error) {
+    console.error('[IQ ERROR]', error.message)
+
+    await sock.sendMessage(from, {
+      text: '> Failed to calculate IQ. Brain scanner offline'
+    }, { quoted: msg })
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+  }
+}

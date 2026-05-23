@@ -51,10 +51,6 @@ export default async function whatsappstalk(sock, { msg, from, args }, botSettin
       react: { text: '😷', key: msg.key }
     })
 
-    const processingMsg = await sock.sendMessage(from, {
-      text: `> Searching WhatsApp profile +${number}...`
-    }, { quoted: msg })
-
     // 3. Check if number exists on WhatsApp
     const [result] = await sock.onWhatsApp(jid)
     if (!result?.exists) {
@@ -68,10 +64,10 @@ export default async function whatsappstalk(sock, { msg, from, args }, botSettin
     let name = null
 
     try {
-      // Get profile picture
+      // Get REAL PROFILE PICTURE
       profilePicUrl = await sock.profilePictureUrl(jid, 'image')
     } catch (e) {
-      console.log('[WASTALK] No profile pic')
+      console.log('[WASTALK] No profile pic or privacy settings')
     }
 
     try {
@@ -96,7 +92,7 @@ export default async function whatsappstalk(sock, { msg, from, args }, botSettin
       console.log('[WASTALK] No contact name')
     }
 
-    // 5. Build info card - BUNNY STYLE
+    // 5. Build info card - ENGLISH ONLY
     const isBusiness = businessProfile? true : false
     const accountType = isBusiness? 'Business 💼' : 'Personal 👤'
     const verifyStatus = businessProfile?.verifiedName? 'Verified ✅' : 'Not Verified'
@@ -132,9 +128,10 @@ export default async function whatsappstalk(sock, { msg, from, args }, botSettin
       }
     }
 
-    infoCard += `\n│\n╰⊷ *Data retrieved successfully*`
+    infoCard += `\n│\n│ 🔗 *Chat:* https://wa.me/${number}`
+    infoCard += `\n│\n╰⊷ *BUNNY MD STALKER MODE*`
 
-    // 6. Send profile with avatar
+    // 6. Send WITH REAL PROFILE PICTURE if available
     if (profilePicUrl) {
       await sock.sendMessage(from, {
         image: { url: profilePicUrl },
@@ -152,12 +149,11 @@ export default async function whatsappstalk(sock, { msg, from, args }, botSettin
       }, { quoted: msg })
     } else {
       await sock.sendMessage(from, {
-        text: infoCard + `\n\n> No profile picture set`
+        text: infoCard + `\n\n> No profile picture available`
       }, { quoted: msg })
     }
 
-    // 7. Delete processing message and react done ✅
-    await sock.sendMessage(from, { delete: processingMsg.key })
+    // 7. React done ✅ - NO DELETE, NO PROCESS MSG
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {

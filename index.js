@@ -6,6 +6,7 @@ import { dirname, join } from 'path'
 import pino from 'pino'
 import qrcode from 'qrcode'
 import fs from 'fs'
+import AdmZip from 'adm-zip'
 import pkg from '@whiskeysockets/baileys'
 const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion, useMultiFileAuthState, makeCacheableSignalKeyStore, Browsers } = pkg
 import { getBotSettings, listenSettingsUpdates, supabase } from './lib/supabase.js'
@@ -23,6 +24,7 @@ let isConnected = false
 let reconnectAttempts = 0
 let lastCredsSync = 0 // Throttle Supabase writes
 const MAX_RECONNECTS = 10
+const SESSION_DIR = './session'
 
 // 2. EXPRESS + SOCKET.IO
 const app = express()
@@ -43,25 +45,28 @@ app.get('/', (req, res) => {
   })
 })
 
-// 3. SUPABASE SYNC - THROTTLED, HAISYNC KILA SAA
-async function syncSessionToCloud() {
+// 3. SUPABASE SYNC - ZIP FOLDER YOTE, TUMIA bu_sessions
+async function syncSessionToCloud(force = false) {
   try {
-    // Throttle: Max mara 1 kila dakika 10
+    // Throttle: Max mara 1 kila dakika 2, au force ukiconnect
     const now = Date.now()
-    if (now - lastCredsSync < 600000) return
+    if (!force && now - lastCredsSync < 120000) return
     lastCredsSync = now
 
-    if (!fs.existsSync('./session/creds.json')) return
+    if (!fs.existsSync(SESSION_DIR)) return
 
-    const credsData = fs.readFileSync('./session/creds.json', 'utf-8')
-    const base64 = Buffer.from(credsData).toString('base64')
+    // ZIP FOLDER YOTE YA SESSION
+    const zip = new AdmZip()
+    zip.addLocalFolder(SESSION_DIR)
+    const zipBuffer = zip.toBuffer()
+    const base64 = zipBuffer.toString('base64')
 
-    await supabase.from('b_sessions').upsert({
-      id: 'creds',
+    await supabase.from('bu_sessions').upsert({
+      id: 'full_session',
       data: base64,
       updated_at: new Date().toISOString()
     })
-    console.log('☁️ Session synced to Supabase')
+    console.log('☁️ Full session + keys synced to Supabase')
   } catch (e) {
     console.log('Session sync error:', e.message)
   }
@@ -70,16 +75,24 @@ async function syncSessionToCloud() {
 async function loadSessionFromCloud() {
   try {
     const { data } = await supabase
-      .from('b_sessions')
+      .from('bu_sessions')
       .select('data')
-      .eq('id', 'creds')
+      .eq('id', 'full_session')
       .single()
 
     if (data?.data) {
-      const decoded = Buffer.from(data.data, 'base64').toString('utf-8')
-      if (!fs.existsSync('./session')) fs.mkdirSync('./session', { recursive: true })
-      fs.writeFileSync('./session/creds.json', decoded)
-      console.log('☁️ Session restored from Supabase')
+      // FUTA YA ZAMANI KWANZA
+      if (fs.existsSync(SESSION_DIR)) {
+        fs.rmSync(SESSION_DIR, { recursive: true, force: true })
+      }
+      fs.mkdirSync(SESSION_DIR, { recursive: true })
+
+      // UNZIP KUTOKA SUPABASE
+      const zipBuffer = Buffer.from(data.data, 'base64')
+      const zip = new AdmZip(zipBuffer)
+      zip.extractAllTo(SESSION_DIR, true)
+
+      console.log('☁️ Full session + keys restored from Supabase')
       return true
     }
   } catch (e) {
@@ -151,7 +164,7 @@ async function connectToWhatsApp() {
         botSettings = await getBotSettings()
         console.log('🔄 Fresh settings loaded. Prefix:', botSettings.prefix)
         
-        await syncSessionToCloud()
+        await syncSessionToCloud(true) // FORCE SAVE MARA YA KWANZA
         await sendConfirmationMessage()
       }
 
@@ -163,7 +176,7 @@ async function connectToWhatsApp() {
 
         if (statusCode === DisconnectReason.loggedOut) {
           console.log('❌ Logged out. Clearing session...')
-          await supabase.from('b_sessions').delete().eq('id', 'creds')
+          await supabase.from('bu_sessions').delete().eq('id', 'full_session')
           if (fs.existsSync('./session')) fs.rmSync('./session', { recursive: true, force: true })
           qrString = ''
           reconnectAttempts = 0
@@ -184,7 +197,7 @@ async function connectToWhatsApp() {
     // 6. SAVE CREDS - THROTTLED
     sock.ev.on('creds.update', async () => {
       await saveCreds()
-      syncSessionToCloud() // Ina throttle ndani
+      syncSessionToCloud(false) // Ina throttle ndani
     })
 
     // 7. HANDLE MESSAGES

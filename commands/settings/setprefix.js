@@ -1,16 +1,10 @@
 // commands/settings/setprefix.js
-import { createClient } from '@supabase/supabase-js'
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'setprefix'
 export const alias = ['prefix', 'setp']
 export const category = 'Owner'
 export const desc = 'Update the bot command prefix in real-time without restart'
-
-// Supabase client
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-)
 
 export default async function setprefix(sock, { msg, from, sender }, botSettings) {
   try {

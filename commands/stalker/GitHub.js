@@ -24,11 +24,11 @@ export default async function githubstalk(sock, { msg, from, args }, botSettings
 
     // Clean input - extract username
     let identifier = input
-    .replace(/https?:\/\/(www\.)?github\.com\//, '')
-    .replace(/@/, '')
-    .split('/')[0]
-    .split('?')[0]
-    .trim()
+   .replace(/https?:\/\/(www\.)?github\.com\//, '')
+   .replace(/@/, '')
+   .split('/')[0]
+   .split('?')[0]
+   .trim()
 
     // 2. React first - BUNNY STALKER MODE 💻
     await sock.sendMessage(from, {
@@ -125,7 +125,7 @@ export default async function githubstalk(sock, { msg, from, args }, botSettings
     const hireableStatus = userData.hireable? 'Available for hire 💼' : 'Not hireable'
     const typeEmoji = userData.type === 'Organization'? '🏢' : '👤'
 
-    // 8. Build info card - BUNNY STYLE CLEAN TEXT ONLY
+    // 8. Build info card - ENGLISH ONLY
     let infoCard = `╭─⌈ 💻 *${botSettings.botname || 'BUNNY MD'}* ⌋
 │ *GitHub Profile Stalker*
 │
@@ -158,9 +158,9 @@ export default async function githubstalk(sock, { msg, from, args }, botSettings
     }
 
     infoCard += `\n│\n│ 🔗 *Profile:* https://github.com/${userData.username}`
-    infoCard += `\n│\n╰⊷ *USAFI WA BUNNY MD*`
+    infoCard += `\n│\n╰⊷ *BUNNY MD STALKER MODE*`
 
-    // 9. Send text only - NO AVATAR, USAFI TU
+    // 9. Send text only - NO AVATAR
     await sock.sendMessage(from, {
       text: infoCard,
       contextInfo: {
@@ -174,7 +174,7 @@ export default async function githubstalk(sock, { msg, from, args }, botSettings
       }
     }, { quoted: msg })
 
-    // 10. React done ✅ - HAKUNA DELETE, USAFI TU
+    // 10. React done ✅
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {

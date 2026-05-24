@@ -2,7 +2,7 @@
 import { supabase } from '../../lib/supabase.js'
 
 export const name = 'shut'
-export const alias = ['ban', 'mute', 'setshut', 'block']
+export const alias = ['ban', 'mute', 'setshut']
 export const category = 'Settings'
 export const desc = 'Full shut control: on/off, max duration, strikes, whitelist - realtime'
 
@@ -31,10 +31,10 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
 
     // 3. Get current settings
     const { data: currentSettings, error: fetchError } = await supabase
-   .from('group_settings')
-   .select('shut_enabled, shut_max_duration, shut_strikes_limit, shut_mode')
-   .eq('group_jid', from)
-   .maybeSingle()
+     .from('group_settings')
+     .select('shut_enabled, shut_max_duration, shut_strikes_limit, shut_mode')
+     .eq('group_jid', from)
+     .maybeSingle()
 
     if (fetchError) {
       console.error('Supabase fetch error:', fetchError.message)
@@ -46,21 +46,21 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
     const currentStatus = currentSettings?.shut_enabled || false
     const currentMaxDuration = currentSettings?.shut_max_duration || 1440 // 24 hours
     const currentStrikes = currentSettings?.shut_strikes_limit || 3
-    const currentMode = currentSettings?.shut_mode || 'delete' // delete, warn, kick
+    const currentMode = currentSettings?.shut_mode || 'delete'
 
     // 4. SHOW HELP IF NO ARGS
     if (!action) {
       const { data: activeBans } = await supabase
-     .from('shut_list')
-     .select('id', { count: 'exact' })
-     .eq('group_jid', from)
-     .eq('is_active', true)
+       .from('shut_list')
+       .select('id', { count: 'exact' })
+       .eq('group_jid', from)
+       .eq('is_active', true)
 
       const { data: totalBans } = await supabase
-     .from('shut_logs')
-     .select('id', { count: 'exact' })
-     .eq('group_jid', from)
-     .eq('action', 'banned')
+       .from('shut_logs')
+       .select('id', { count: 'exact' })
+       .eq('group_jid', from)
+       .eq('action', 'banned')
 
       await sock.sendMessage(from, {
         react: { text: '⛑️', key: msg.key }
@@ -84,21 +84,107 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
 │ ${botSettings.prefix}shut whitelist @user
 │ ${botSettings.prefix}shut unwhitelist @user
 │
+│ *To Ban User:*
+│ ${botSettings.prefix}shut @user <minutes> <reason>
+│
 │ *Examples:*
 │ ${botSettings.prefix}shut on
 │ ${botSettings.prefix}shut max 60
-│ ${botSettings.prefix}shut mode kick
+│ ${botSettings.prefix}shut @user 30 spamming
 ╰⊷ *${botSettings.botname}*`
       }, { quoted: msg })
     }
 
-    // 5. HANDLE LIST ACTIVE BANS
+    // 5. HANDLE BAN USER - MENTION/REPLY
+    const mentionedJid = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
+    const repliedUser = msg.message?.extendedTextMessage?.contextInfo?.participant
+    const targetUser = mentionedJid[0] || repliedUser
+
+    if (targetUser &&!['on', 'off', 'max', 'strikes', 'mode', 'list', 'whitelist', 'unwhitelist'].includes(action)) {
+      // This is ban command:.shut @user 30 spamming
+      const duration = parseInt(action) || currentMaxDuration
+      const reason = args.slice(1).join(' ') || 'No reason'
+
+      // FIX LID: Get correct JID
+      const [waResult] = await sock.onWhatsApp(targetUser)
+      if (!waResult?.exists) {
+        return await sock.sendMessage(from, {
+          text: '> User not on WhatsApp'
+        }, { quoted: msg })
+      }
+      const correctUser = waResult.jid
+
+      // Check whitelist
+      const { data: whitelisted } = await supabase
+       .from('shut_whitelist')
+       .select('id')
+       .eq('group_jid', from)
+       .eq('user_jid', correctUser)
+       .maybeSingle()
+
+      if (whitelisted) {
+        return await sock.sendMessage(from, {
+          text: `> @${correctUser.split('@')[0]} is whitelisted and cannot be muted.`,
+          mentions: [correctUser]
+        }, { quoted: msg })
+      }
+
+      const expiresAt = duration === 0? null : new Date(Date.now() + duration * 60000).toISOString()
+      const type = duration === 0? 'perm' : 'temp'
+
+      const { error } = await supabase
+       .from('shut_list')
+       .upsert({
+          group_jid: from,
+          user_jid: correctUser,
+          type: type,
+          reason: reason,
+          expires_at: expiresAt,
+          banned_by: sender,
+          is_active: true,
+          deleted_count: 0
+        }, { onConflict: 'group_jid,user_jid' })
+
+      if (error) {
+        return await sock.sendMessage(from, {
+          text: '> Failed to ban user. Database error.'
+        }, { quoted: msg })
+      }
+
+      // Log
+      await supabase.from('shut_logs').insert({
+        group_jid: from,
+        user_jid: correctUser,
+        action: 'banned',
+        type: type,
+        reason: reason,
+        banned_by: sender
+      })
+
+      await sock.sendMessage(from, {
+        react: { text: '⛑️', key: msg.key }
+      })
+
+      const durationText = duration === 0? 'PERMANENT' : `${duration} minutes`
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ 🔇 *User Muted* ⌋
+│ User: @${correctUser.split('@')[0]}
+│ Duration: ${durationText}
+│ Reason: ${reason}
+│ Type: ${type.toUpperCase()}
+╰⊷ *${botSettings.botname}*`,
+        mentions: [correctUser]
+      }, { quoted: msg })
+    }
+
+    // 6. HANDLE LIST ACTIVE BANS
     if (action === 'list' || action === 'banned') {
       const { data: bans } = await supabase
-     .from('active_shut_bans')
-     .select('*')
-     .eq('group_jid', from)
-     .limit(20)
+       .from('shut_list')
+       .select('*')
+       .eq('group_jid', from)
+       .eq('is_active', true)
+       .limit(20)
 
       if (!bans || bans.length === 0) {
         await sock.sendMessage(from, {
@@ -112,29 +198,34 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
       }
 
       let listText = `╭─⌈ 📋 *Active Bans (${bans.length})* ⌋\n│\n`
+      const mentions = []
       bans.slice(0, 10).forEach((b, i) => {
-        const icon = b.type === 'perm'? '🔴' : b.type === 'kick_temp'? '👢' : '🟡'
+        const icon = b.type === 'perm'? '🔴' : '🟡'
+        const timeLeft = b.expires_at 
+         ? Math.max(0, Math.floor((new Date(b.expires_at) - Date.now()) / 60000)) + ' min'
+          : 'PERMANENT'
         listText += `│ ${i + 1}. ${icon} @${b.user_jid.split('@')[0]}\n`
-        listText += `│ Type: ${b.type} | Left: ${b.time_remaining}\n`
+        listText += `│ Type: ${b.type} | Left: ${timeLeft}\n`
         listText += `│ Reason: ${b.reason}\n│\n`
+        mentions.push(b.user_jid)
       })
       if (bans.length > 10) listText += `│... +${bans.length - 10} more\n`
-      listText += `╰⊷ *Use.shut off @user*`
+      listText += `╰⊷ *Use ${botSettings.prefix}unshut @user*`
 
       await sock.sendMessage(from, {
         react: { text: '📋', key: msg.key }
       })
       return await sock.sendMessage(from, {
         text: listText,
-        mentions: bans.map(b => b.user_jid)
+        mentions: mentions
       }, { quoted: msg })
     }
 
-    // 6. HANDLE MAX DURATION
+    // 7. HANDLE MAX DURATION
     if (action === 'max' || action === 'duration' || action === 'time') {
       const newMax = parseInt(args[1])
 
-      if (!newMax || newMax < 1 || newMax > 10080) { // Max 7 days
+      if (!newMax || newMax < 1 || newMax > 10080) {
         await sock.sendMessage(from, {
           react: { text: '❌', key: msg.key }
         })
@@ -143,27 +234,15 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
         }, { quoted: msg })
       }
 
-      if (newMax === currentMaxDuration) {
-        await sock.sendMessage(from, {
-          react: { text: '⚠️', key: msg.key }
-        })
-        return await sock.sendMessage(from, {
-          text: `> Max duration is already set to: ${newMax} minutes`
-        }, { quoted: msg })
-      }
-
       const { error } = await supabase
-     .from('group_settings')
-     .upsert({
+       .from('group_settings')
+       .upsert({
           group_jid: from,
           shut_max_duration: newMax,
           updated_at: new Date().toISOString()
         }, { onConflict: 'group_jid' })
 
       if (error) {
-        await sock.sendMessage(from, {
-          react: { text: '❌', key: msg.key }
-        })
         return await sock.sendMessage(from, {
           text: '> Failed to update max duration. Database error.'
         }, { quoted: msg })
@@ -182,40 +261,25 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
       }, { quoted: msg })
     }
 
-    // 7. HANDLE STRIKES LIMIT
+    // 8. HANDLE STRIKES LIMIT
     if (action === 'strikes' || action === 'limit') {
       const newStrikes = parseInt(args[1])
 
       if (!newStrikes || newStrikes < 1 || newStrikes > 5) {
-        await sock.sendMessage(from, {
-          react: { text: '❌', key: msg.key }
-        })
         return await sock.sendMessage(from, {
           text: `> Invalid strike limit. Use 1-5\n> Example: ${botSettings.prefix}shut strikes 3\n> Current: ${currentStrikes}`
         }, { quoted: msg })
       }
 
-      if (newStrikes === currentStrikes) {
-        await sock.sendMessage(from, {
-          react: { text: '⚠️', key: msg.key }
-        })
-        return await sock.sendMessage(from, {
-          text: `> Strike limit is already set to: ${newStrikes}`
-        }, { quoted: msg })
-      }
-
       const { error } = await supabase
-     .from('group_settings')
-     .upsert({
+       .from('group_settings')
+       .upsert({
           group_jid: from,
           shut_strikes_limit: newStrikes,
           updated_at: new Date().toISOString()
         }, { onConflict: 'group_jid' })
 
       if (error) {
-        await sock.sendMessage(from, {
-          react: { text: '❌', key: msg.key }
-        })
         return await sock.sendMessage(from, {
           text: '> Failed to update strike limit. Database error.'
         }, { quoted: msg })
@@ -230,46 +294,30 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
 │ Strike Limit: ${newStrikes}
 │ Old Value: ${currentStrikes}
 │ Auto Perm: ${newStrikes} strikes
-│ Status: Applied instantly
 ╰⊷ *${botSettings.botname}*`
       }, { quoted: msg })
     }
 
-    // 8. HANDLE MODE - delete, warn, kick
+    // 9. HANDLE MODE
     if (action === 'mode') {
       const newMode = args[1]?.toLowerCase()
       const validModes = ['delete', 'warn', 'kick']
 
       if (!newMode ||!validModes.includes(newMode)) {
-        await sock.sendMessage(from, {
-          react: { text: '❌', key: msg.key }
-        })
         return await sock.sendMessage(from, {
           text: `> Invalid mode. Use: delete, warn, kick\n> Example: ${botSettings.prefix}shut mode kick\n> Current: ${currentMode}`
         }, { quoted: msg })
       }
 
-      if (newMode === currentMode) {
-        await sock.sendMessage(from, {
-          react: { text: '⚠️', key: msg.key }
-        })
-        return await sock.sendMessage(from, {
-          text: `> Mode is already set to: ${newMode}`
-        }, { quoted: msg })
-      }
-
       const { error } = await supabase
-     .from('group_settings')
-     .upsert({
+       .from('group_settings')
+       .upsert({
           group_jid: from,
           shut_mode: newMode,
           updated_at: new Date().toISOString()
         }, { onConflict: 'group_jid' })
 
       if (error) {
-        await sock.sendMessage(from, {
-          react: { text: '❌', key: msg.key }
-        })
         return await sock.sendMessage(from, {
           text: '> Failed to update mode. Database error.'
         }, { quoted: msg })
@@ -290,15 +338,13 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
 │ Mode: ${newMode.toUpperCase()}
 │ Old Value: ${currentMode}
 │ Behavior: ${modeDesc[newMode]}
-│ Status: Applied instantly
 ╰⊷ *${botSettings.botname}*`
       }, { quoted: msg })
     }
 
-    // 9. HANDLE WHITELIST - Watu wasiofungiwa
+    // 10. HANDLE WHITELIST
     if (action === 'whitelist' || action === 'wl') {
-      const mentionedJid = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
-      const targetUser = mentionedJid[0]
+      const targetUser = mentionedJid[0] || repliedUser
 
       if (!targetUser) {
         return await sock.sendMessage(from, {
@@ -306,20 +352,26 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
         }, { quoted: msg })
       }
 
+      // FIX LID
+      const [waResult] = await sock.onWhatsApp(targetUser)
+      if (!waResult?.exists) {
+        return await sock.sendMessage(from, {
+          text: '> User not on WhatsApp'
+        }, { quoted: msg })
+      }
+      const correctUser = waResult.jid
+
       const { error } = await supabase
-     .from('shut_whitelist')
-     .upsert({
+       .from('shut_whitelist')
+       .upsert({
           group_jid: from,
-          user_jid: targetUser,
+          user_jid: correctUser,
           added_by: sender
         }, { onConflict: 'group_jid,user_jid' })
 
       if (error) {
-        await sock.sendMessage(from, {
-          react: { text: '❌', key: msg.key }
-        })
         return await sock.sendMessage(from, {
-          text: '> Failed to whitelist. Database error or already whitelisted.'
+          text: '> Failed to whitelist. Already whitelisted or database error.'
         }, { quoted: msg })
       }
 
@@ -328,17 +380,16 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
       })
       return await sock.sendMessage(from, {
         text: `╭─⌈ ✅ *Whitelisted* ⌋
-│ User: @${targetUser.split('@')[0]}
+│ User: @${correctUser.split('@')[0]}
 │ Status: Immune to shut
 ╰⊷ *${botSettings.botname}*`,
-        mentions: [targetUser]
+        mentions: [correctUser]
       }, { quoted: msg })
     }
 
-    // 10. HANDLE UNWHITELIST
+    // 11. HANDLE UNWHITELIST
     if (action === 'unwhitelist' || action === 'unwl') {
-      const mentionedJid = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
-      const targetUser = mentionedJid[0]
+      const targetUser = mentionedJid[0] || repliedUser
 
       if (!targetUser) {
         return await sock.sendMessage(from, {
@@ -346,17 +397,23 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
         }, { quoted: msg })
       }
 
+      // FIX LID
+      const [waResult] = await sock.onWhatsApp(targetUser)
+      if (!waResult?.exists) {
+        return await sock.sendMessage(from, {
+          text: '> User not on WhatsApp'
+        }, { quoted: msg })
+      }
+      const correctUser = waResult.jid
+
       const { data, error } = await supabase
-     .from('shut_whitelist')
-     .delete()
-     .eq('group_jid', from)
-     .eq('user_jid', targetUser)
-     .select()
+       .from('shut_whitelist')
+       .delete()
+       .eq('group_jid', from)
+       .eq('user_jid', correctUser)
+       .select()
 
       if (error ||!data || data.length === 0) {
-        await sock.sendMessage(from, {
-          react: { text: '❌', key: msg.key }
-        })
         return await sock.sendMessage(from, {
           text: `> User not in whitelist.`
         }, { quoted: msg })
@@ -367,54 +424,43 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
       })
       return await sock.sendMessage(from, {
         text: `╭─⌈ 🗑️ *Unwhitelisted* ⌋
-│ User: @${targetUser.split('@')[0]}
+│ User: @${correctUser.split('@')[0]}
 │ Status: Can be shut now
 ╰⊷ *${botSettings.botname}*`,
-        mentions: [targetUser]
+        mentions: [correctUser]
       }, { quoted: msg })
     }
 
-    // 11. HANDLE ON/OFF
+    // 12. HANDLE ON/OFF
     const validOptions = ['on', 'off', 'enable', 'disable', '1', '0']
     if (!validOptions.includes(action)) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
       return await sock.sendMessage(from, {
-        text: `> Invalid option "${action}".\n> Use: on/off, max, strikes, mode, list, whitelist\n> Example: ${botSettings.prefix}shut on`
+        text: `> Invalid option "${action}".\n> Use: on/off, max, strikes, mode, list, whitelist\n> Or: ${botSettings.prefix}shut @user <minutes> <reason>`
       }, { quoted: msg })
     }
 
     const newValue = ['on', 'enable', '1'].includes(action)? true : false
 
     if (newValue === currentStatus) {
-      await sock.sendMessage(from, {
-        react: { text: '⚠️', key: msg.key }
-      })
       return await sock.sendMessage(from, {
         text: `> Shut is already ${newValue? 'ON' : 'OFF'}`
       }, { quoted: msg })
     }
 
-    // 12. UPDATE SETTINGS - REALTIME NO RESTART
     const { error } = await supabase
-   .from('group_settings')
-   .upsert({
+     .from('group_settings')
+     .upsert({
         group_jid: from,
         shut_enabled: newValue,
         updated_at: new Date().toISOString()
       }, { onConflict: 'group_jid' })
 
     if (error) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
       return await sock.sendMessage(from, {
         text: '> Failed to update shut. Database error.'
       }, { quoted: msg })
     }
 
-    // 13. React + Success message
     await sock.sendMessage(from, {
       react: { text: newValue? '⛑️' : '❌', key: msg.key }
     })
@@ -425,7 +471,6 @@ export default async function shutSettings(sock, { msg, from, sender, isGroup, i
 │ Max Duration: ${currentMaxDuration} min
 │ Strike Limit: ${currentStrikes}
 │ Mode: ${currentMode.toUpperCase()}
-│ Old Status: ${currentStatus? 'ON' : 'OFF'}
 │ Status: Applied instantly
 ╰⊷ *${botSettings.botname}*`
 

@@ -1,9 +1,10 @@
 // commands/settings/autoreact.js
+
 import { supabase } from '../../lib/supabase.js'
 
 export const name = 'autoreact'
 export const alias = ['areact', 'autoreaction']
-export const category = 'Settings' // ✅ FIXED: Settings sio Owner
+export const category = 'Settings'
 export const desc = 'Update autoreact status for this group in real-time without restart'
 
 export default async function autoreact(sock, { msg, from, isGroup }, botSettings) {
@@ -20,12 +21,15 @@ export default async function autoreact(sock, { msg, from, isGroup }, botSetting
     const args = body.trim().split(' ').slice(1)
     const newStatus = args[0]?.toLowerCase()
 
-    // 3. Get current status - FIXED: maybeSingle() instead of single()
+    // 3. Get current settings + group name
+    const metadata = await sock.groupMetadata(from)
+    const groupName = metadata.subject
+
     const { data: currentSettings, error: fetchError } = await supabase
-.from('group_settings')
-.select('autoreact')
-.eq('group_jid', from)
-.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+    .from('group_settings')
+    .select('autoreact')
+    .eq('group_jid', from)
+    .maybeSingle()
 
     if (fetchError) {
       console.error('Supabase fetch error:', fetchError.message)
@@ -58,15 +62,20 @@ export default async function autoreact(sock, { msg, from, isGroup }, botSetting
       }, { quoted: msg })
     }
 
-    // 6. Update Supabase - SCHEMA COLUMNS: group_jid, autoreact, updated_at
+    // 6. Update Supabase - IJAZE YOTE SASA
     const { data, error } = await supabase
-.from('group_settings')
-.upsert({
-       group_jid: from,
-       autoreact: newValue,
-       updated_at: new Date().toISOString()
-     }, { onConflict: 'group_jid' })
-.select()
+    .from('group_settings')
+    .upsert({
+        group_jid: from,
+        group_name: groupName,
+        autoreact: newValue,
+        updated_at: new Date().toISOString(),
+        created_at: new Date().toISOString()
+      }, {
+        onConflict: 'group_jid',
+        ignoreDuplicates: false
+      })
+    .select()
 
     if (error) {
       console.error('Supabase update error:', error.message)
@@ -81,10 +90,13 @@ export default async function autoreact(sock, { msg, from, isGroup }, botSetting
     })
 
     const successPayload =
-`╭─⌈ 🧵 *Settings Updated* ⌋
-│ Autoreact changed to: ${newStatus}
-│ Old Status: ${currentValue? 'on' : 'off'}
-│ Status: Applied instantly
+`╭─⌈ ❤️ *Settings Updated* ⌋
+│
+│ *Group:* ${groupName}
+│ *Autoreact:* ${newStatus}
+│ *Old Status:* ${currentValue? 'on' : 'off'}
+│ *Status:* Applied instantly
+│
 ╰⊷ *${botSettings.botname || 'BUNNY MD'}*`
 
     await sock.sendMessage(from, {

@@ -34,7 +34,10 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
 
     const groupMetadata = await sock.groupMetadata(from)
     const groupAdmins = groupMetadata.participants.filter(p => p.admin).map(p => p.id)
-    const botJid = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+    
+    // FIX 1: Bot JID detection - support LID format
+    const botJid = sock.user.id
+    const botLid = sock.user.lid || botJid
     const senderJid = msg.key.participant || msg.key.remoteJid
 
     let targets = []
@@ -44,8 +47,8 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
     // 5. WAY 1: KICK ALL -.kick all
     if (args[0]?.toLowerCase() === 'all') {
       targets = groupMetadata.participants
-       .filter(p =>!groupAdmins.includes(p.id) && p.id!== botJid)
-       .map(p => p.id)
+      .filter(p =>!groupAdmins.includes(p.id) && p.id!== botJid && p.id!== botLid)
+      .map(p => p.id)
 
       if (!targets.length) {
         return await sock.sendMessage(from, {
@@ -57,6 +60,8 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
         text: `> Kicking ${targets.length} members...\n> Admins are safe ✅`
       }, { quoted: msg })
 
+      await sock.sendPresenceUpdate('paused', from) // Avoid rate limit
+      
       // Kick in batches of 5 to avoid rate limit
       for (let i = 0; i < targets.length; i += 5) {
         const batch = targets.slice(i, i + 5)
@@ -83,7 +88,7 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
           text: '> Cannot kick an admin 🍊'
         }, { quoted: msg })
       }
-      if (quotedParticipant === botJid) {
+      if (quotedParticipant === botJid || quotedParticipant === botLid) {
         return await sock.sendMessage(from, {
           text: '> I cannot kick myself 🍊'
         }, { quoted: msg })
@@ -96,7 +101,7 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
       for (const jid of mentionedJid) {
         if (jid === senderJid) continue
         if (groupAdmins.includes(jid)) continue
-        if (jid === botJid) continue
+        if (jid === botJid || jid === botLid) continue
         targets.push(jid)
       }
     }
@@ -116,7 +121,7 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
 
           if (jid === senderJid) continue
           if (groupAdmins.includes(jid)) continue
-          if (jid === botJid) continue
+          if (jid === botJid || jid === botLid) continue
 
           // Check if user is actually in group
           const isInGroup = groupMetadata.participants.some(p => p.id === jid)
@@ -125,8 +130,11 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
       }
     }
 
-    // 9. Remove duplicates
+    // 9. Remove duplicates + final filter
     targets = [...new Set(targets)]
+    // FIX 2: Filter only users still in group
+    const currentParticipants = groupMetadata.participants.map(p => p.id)
+    targets = targets.filter(jid => currentParticipants.includes(jid))
 
     if (!targets.length) {
       return await sock.sendMessage(from, {
@@ -147,16 +155,21 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
 
     const result = await sock.groupParticipantsUpdate(from, targets, 'remove')
 
-    // 11. Process results
+    // 11. Process results - FIX 3: Accept 409 as success
     let removed = []
     let failed = []
 
     for (const res of result) {
       const number = res.jid.split('@')[0]
-      if (res.status === 200) {
+      // 200 = success, 409 = conflict (already removed) = also success
+      if (res.status === 200 || res.status === 409) {
         removed.push(number)
+      } else if (res.status === 403) {
+        failed.push(`${number} - Not admin`)
+      } else if (res.status === 404) {
+        failed.push(`${number} - Not in group`)
       } else {
-        failed.push(number)
+        failed.push(`${number} - Error ${res.status}`)
       }
     }
 
@@ -171,7 +184,6 @@ export default async function kick(sock, { msg, from, args, isAdmin, isBotAdmin,
     if (failed.length) {
       report += `│ ❌ Failed: ${failed.length}\n`
       failed.forEach(n => report += `│ • ${n}\n`)
-      report += `│ *Reason: User left or admin*\n`
     }
 
     report += `╰⊷ Done 🐰`

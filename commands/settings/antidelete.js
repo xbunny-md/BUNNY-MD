@@ -1,12 +1,13 @@
-// commands/settings/antidelete.js
+// commands/settings/autoview.js
+
 import { supabase } from '../../lib/supabase.js'
 
-export const name = 'antidelete'
-export const alias = ['antidel', 'ad']
-export const category = 'Settings' // ✅ FIXED: Settings sio Owner
-export const desc = 'Update antidelete status for this group in real-time without restart'
+export const name = 'autoview'
+export const alias = ['av', 'autostatus']
+export const category = 'Settings'
+export const desc = 'Update autoview status for this group in real-time without restart'
 
-export default async function antidelete(sock, { msg, from, sender, isGroup }, botSettings) {
+export default async function autoview(sock, { msg, from, sender, isGroup }, botSettings) {
   try {
     // 1. GROUP ONLY CHECK
     if (!isGroup) {
@@ -20,12 +21,12 @@ export default async function antidelete(sock, { msg, from, sender, isGroup }, b
     const args = body.trim().split(' ').slice(1)
     const newStatus = args[0]?.toLowerCase()
 
-    // 3. Get current status - FIXED: maybeSingle() instead of single()
+    // 3. Get current status
     const { data: currentSettings, error: fetchError } = await supabase
-.from('group_settings')
-.select('antidelete')
-.eq('group_jid', from)
-.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+     .from('group_settings')
+     .select('autoview_status')
+     .eq('group_jid', from)
+     .maybeSingle()
 
     if (fetchError) {
       console.error('Supabase fetch error:', fetchError.message)
@@ -34,11 +35,11 @@ export default async function antidelete(sock, { msg, from, sender, isGroup }, b
       }, { quoted: msg })
     }
 
-    const currentValue = currentSettings?.antidelete || false
+    const currentValue = currentSettings?.autoview_status || false
 
     if (!newStatus) {
       return await sock.sendMessage(from, {
-        text: `> Usage: ${botSettings.prefix}antidelete <on/off>\n> Example: ${botSettings.prefix}antidelete on\n> Current: ${currentValue? 'on' : 'off'}`
+        text: `> Usage: ${botSettings.prefix}autoview <on/off>\n> Example: ${botSettings.prefix}autoview on\n> Current: ${currentValue? 'on' : 'off'}`
       }, { quoted: msg })
     }
 
@@ -54,35 +55,35 @@ export default async function antidelete(sock, { msg, from, sender, isGroup }, b
     const newValue = newStatus === 'on'? true : false
     if (newValue === currentValue) {
       return await sock.sendMessage(from, {
-        text: `> Antidelete is already set to: ${newStatus}`
+        text: `> Autoview is already set to: ${newStatus}`
       }, { quoted: msg })
     }
 
-    // 6. Update Supabase - SCHEMA COLUMNS: group_jid, antidelete, updated_at
+    // 6. Update Supabase
     const { data, error } = await supabase
-.from('group_settings')
-.upsert({
-       group_jid: from,
-       antidelete: newValue,
-       updated_at: new Date().toISOString()
-     }, { onConflict: 'group_jid' })
-.select()
+     .from('group_settings')
+     .upsert({
+        group_jid: from,
+        autoview_status: newValue,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'group_jid' })
+     .select()
 
     if (error) {
       console.error('Supabase update error:', error.message)
       return await sock.sendMessage(from, {
-        text: '> Failed to update antidelete. Database error.'
+        text: '> Failed to update autoview. Database error.'
       }, { quoted: msg })
     }
 
     // 7. React + Success message
     await sock.sendMessage(from, {
-      react: { text: '👾', key: msg.key }
+      react: { text: '👁️', key: msg.key }
     })
 
     const successPayload =
-`╭─⌈ 🧵 *Settings Updated* ⌋
-│ Antidelete changed to: ${newStatus}
+`╭─⌈ 👁️ *Settings Updated* ⌋
+│ Autoview changed to: ${newStatus}
 │ Old Status: ${currentValue? 'on' : 'off'}
 │ Status: Applied instantly
 ╰⊷ *${botSettings.botname || 'BUNNY MD'}*`
@@ -92,9 +93,9 @@ export default async function antidelete(sock, { msg, from, sender, isGroup }, b
     }, { quoted: msg })
 
   } catch (commandException) {
-    console.error(`[ANTIDELETE ERROR]`, commandException.message)
+    console.error(`[AUTOVIEW ERROR]`, commandException.message)
     await sock.sendMessage(from, {
-      text: '> Failed to update antidelete. Check database connection.'
+      text: '> Failed to update autoview. Check database connection.'
     }, { quoted: msg })
   }
 }

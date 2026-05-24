@@ -7,6 +7,7 @@ export const category = 'Downloader'
 export const desc = 'Download TikTok videos without watermark in HD'
 
 export default async function tiktok(sock, { msg, from, args }, botSettings) {
+  let processingMsg = null
   try {
     // 1. Extract link from args, message text, or quoted message
     const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
@@ -30,21 +31,21 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
       react: { text: '🏹', key: msg.key }
     })
 
-    const processingMsg = await sock.sendMessage(from, {
+    processingMsg = await sock.sendMessage(from, {
       text: `> Processing TikTok link...`
     }, { quoted: msg })
 
-    // 3. Resolve short links - vm.tiktok.com / vt.tiktok.com
+    // 3. Resolve short links - RENDER SAFE
     if (link.includes('vm.tiktok.com') || link.includes('vt.tiktok.com')) {
       try {
         const res = await axios.get(link, {
           maxRedirects: 5,
-          timeout: 10000,
+          timeout: 7000,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
         })
-        link = res.request.res.responseUrl
+        link = res.request.res.responseUrl || link
       } catch (err) {
         throw new Error('Failed to resolve short link')
       }
@@ -52,14 +53,19 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
 
     let videoData = null
 
-    // 4. Primary API - tikwm.com
+    // 4. API 1 - tikwm.com - NO LANGUAGE CODE
     try {
-      const res1 = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(link)}`, {
-        timeout: 15000
+      const res1 = await axios.get(`https://www.tikwm.com/api/`, {
+        params: { url: link, hd: 1 },
+        timeout: 7000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
       })
-      if (res1.data?.data?.play) {
+
+      if (res1.data?.code === 0 && res1.data?.data?.play) {
         videoData = {
-          url: res1.data.data.play,
+          url: res1.data.data.hdplay || res1.data.data.play,
           title: res1.data.data.title || 'TikTok Video',
           author: res1.data.data.author?.nickname || 'Unknown',
           duration: res1.data.data.duration || 0,
@@ -68,15 +74,20 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
         }
       }
     } catch (e) {
-      console.log('[TIKTOK] Primary API failed, trying fallback...')
+      console.log('[TT] API 1 tikwm failed:', e.message)
     }
 
-    // 5. Fallback API - tiklydown.eu.org
+    // 5. API 2 - tiklydown.eu.org
     if (!videoData) {
       try {
-        const res2 = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(link)}`, {
-          timeout: 15000
+        const res2 = await axios.get(`https://api.tiklydown.eu.org/api/download`, {
+          params: { url: link },
+          timeout: 7000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
         })
+
         if (res2.data?.video?.noWatermark) {
           videoData = {
             url: res2.data.video.noWatermark,
@@ -88,7 +99,60 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
           }
         }
       } catch (e) {
-        console.log('[TIKTOK] Fallback API failed')
+        console.log('[TT] API 2 tiklydown failed:', e.message)
+      }
+    }
+
+    // 6. API 3 - ssstik.io - ADDED NGUVU
+    if (!videoData) {
+      try {
+        const res3 = await axios.get(`https://ssstik.io/api/convert`, {
+          params: { url: link },
+          timeout: 7000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        })
+
+        if (res3.data?.result?.without_watermark) {
+          videoData = {
+            url: res3.data.result.without_watermark,
+            title: res3.data.result.title || 'TikTok Video',
+            author: res3.data.result.author?.nickname || 'Unknown',
+            duration: res3.data.result.duration || 0,
+            thumbnail: res3.data.result.cover,
+            views: 0
+          }
+        }
+      } catch (e) {
+        console.log('[TT] API 3 ssstik failed:', e.message)
+      }
+    }
+
+    // 7. API 4 - dlpanda.com - ADDED NGUVU
+    if (!videoData) {
+      try {
+        const res4 = await axios.post('https://dlpanda.com/api/json',
+          `url=${encodeURIComponent(link)}`, {
+          timeout: 7000,
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        })
+
+        if (res4.data?.video?.url) {
+          videoData = {
+            url: res4.data.video.url,
+            title: res4.data.title || 'TikTok Video',
+            author: res4.data.author || 'Unknown',
+            duration: res4.data.duration || 0,
+            thumbnail: res4.data.cover,
+            views: 0
+          }
+        }
+      } catch (e) {
+        console.log('[TT] API 4 dlpanda failed:', e.message)
       }
     }
 
@@ -96,14 +160,14 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
       throw new Error('Video not found or unavailable')
     }
 
-    // 6. Format duration
+    // 8. Format duration
     const formatDuration = (seconds) => {
       const min = Math.floor(seconds / 60)
       const sec = seconds % 60
       return `${min}:${sec.toString().padStart(2, '0')}`
     }
 
-    // 7. Send info card - BUNNY STYLE
+    // 9. Send info card - NO IMAGE TO SAVE RAM
     const infoPayload = `╭─⌈ 🎬 *${botSettings.botname || 'BUNNY MD'}* ⌋
 │ Title: ${videoData.title.slice(0, 40)}
 │ Author: @${videoData.author}
@@ -112,14 +176,11 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
 │ Quality: HD No Watermark
 ╰⊷ Downloading...`
 
-    if (videoData.thumbnail) {
-      await sock.sendMessage(from, {
-        image: { url: videoData.thumbnail },
-        caption: infoPayload
-      }, { quoted: msg })
-    }
+    await sock.sendMessage(from, {
+      text: infoPayload
+    }, { quoted: msg })
 
-    // 8. Send video
+    // 10. Send video - STREAM URL DIRECTLY
     await sock.sendMessage(from, {
       video: { url: videoData.url },
       mimetype: 'video/mp4',
@@ -128,16 +189,16 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
         externalAdReply: {
           title: videoData.title.slice(0, 60),
           body: `${botSettings.botname} • TikTok Downloader`,
-          thumbnailUrl: videoData.thumbnail,
           mediaType: 2,
-          renderLargerThumbnail: true,
           sourceUrl: link
         }
       }
     }, { quoted: msg })
 
-    // 9. Delete processing message and react done ✅
-    await sock.sendMessage(from, { delete: processingMsg.key })
+    // 11. Delete processing message and react done ✅
+    if (processingMsg) {
+      await sock.sendMessage(from, { delete: processingMsg.key }).catch(() => {})
+    }
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {
@@ -148,11 +209,19 @@ export default async function tiktok(sock, { msg, from, args }, botSettings) {
       errorMsg = '> Video is unavailable or private'
     } else if (error.message.includes('resolve')) {
       errorMsg = '> Invalid TikTok link'
-    } else if (error.message.includes('timeout')) {
+    } else if (error.message.includes('timeout') || error.code === 'ECONNABORTED') {
       errorMsg = '> Server timeout. Try again'
+    } else if (error.message.includes('ENOTFOUND')) {
+      errorMsg = '> All APIs down. Try again later'
     }
 
     await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
     await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+
+    if (processingMsg) {
+      try {
+        await sock.sendMessage(from, { delete: processingMsg.key })
+      } catch {}
+    }
   }
 }

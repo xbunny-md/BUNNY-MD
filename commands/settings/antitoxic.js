@@ -1,10 +1,10 @@
-// commands/antitoxic.js
-import { supabase } from '../lib/supabase.js'
+// commands/settings/antitoxic.js
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'antitoxic'
-export const alias = ['antit', 'notoxic']
-export const category = 'Owner'
-export const desc = 'Update antitoxic status for this group in real-time without restart'
+export const alias = ['antit', 'notoxic', 'badword']
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
+export const desc = 'Update badword filter status for this group in real-time without restart'
 
 export default async function antitoxic(sock, { msg, from, sender, isGroup }, botSettings) {
   try {
@@ -20,14 +20,21 @@ export default async function antitoxic(sock, { msg, from, sender, isGroup }, bo
     const args = body.trim().split(' ').slice(1)
     const newStatus = args[0]?.toLowerCase()
 
-    // 3. Get current status
-    const { data: currentSettings } = await supabase
+    // 3. Get current status - ✅ FIXED: Tumia badword_filter kama schema
+    const { data: currentSettings, error: fetchError } = await supabase
 .from('group_settings')
-.select('antitoxic')
+.select('badword_filter') // ✅ SCHEMA COLUMN: badword_filter
 .eq('group_jid', from)
-.single()
+.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
 
-    const currentValue = currentSettings?.antitoxic || false
+    if (fetchError) {
+      console.error('Supabase fetch error:', fetchError.message)
+      return await sock.sendMessage(from, {
+        text: '> Failed to fetch current settings. Database error.'
+      }, { quoted: msg })
+    }
+
+    const currentValue = currentSettings?.badword_filter || false
 
     if (!newStatus) {
       return await sock.sendMessage(from, {
@@ -51,12 +58,12 @@ export default async function antitoxic(sock, { msg, from, sender, isGroup }, bo
       }, { quoted: msg })
     }
 
-    // 6. Update Supabase group_settings table
+    // 6. Update Supabase - ✅ FIXED: Tumia badword_filter column
     const { data, error } = await supabase
 .from('group_settings')
 .upsert({
        group_jid: from,
-       antitoxic: newValue,
+       badword_filter: newValue, // ✅ SCHEMA COLUMN: badword_filter
        updated_at: new Date().toISOString()
      }, { onConflict: 'group_jid' })
 .select()

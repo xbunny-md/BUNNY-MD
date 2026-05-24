@@ -34,7 +34,10 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
 
     const groupMetadata = await sock.groupMetadata(from)
     const groupAdmins = groupMetadata.participants.filter(p => p.admin).map(p => p.id)
-    const botJid = sock.user.id.split(':')[0] + '@s.whatsapp.net'
+    
+    // FIX 1: Bot JID - support LID format
+    const botJid = sock.user.id
+    const botLid = sock.user.lid || botJid
     const senderJid = msg.key.participant || msg.key.remoteJid
 
     let targets = []
@@ -76,8 +79,8 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
     // 6. WAY 2: PROMOTE ALL -.promote all
     if (args[0]?.toLowerCase() === 'all') {
       targets = groupMetadata.participants
-     .filter(p =>!p.admin && p.id!== botJid && p.id!== senderJid)
-     .map(p => p.id)
+   .filter(p =>!p.admin && p.id!== botJid && p.id!== botLid && p.id!== senderJid)
+   .map(p => p.id)
 
       if (!targets.length) {
         return await sock.sendMessage(from, {
@@ -88,6 +91,8 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
       const confirmMsg = await sock.sendMessage(from, {
         text: `> Promoting ${targets.length} members to admin...\n> This is dangerous ⚠️`
       }, { quoted: msg })
+
+      await sock.sendPresenceUpdate('paused', from) // Avoid rate limit
 
       // Promote in batches of 5
       for (let i = 0; i < targets.length; i += 5) {
@@ -115,7 +120,7 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
           text: '> User is already an admin 🍊'
         }, { quoted: msg })
       }
-      if (quotedParticipant === botJid) {
+      if (quotedParticipant === botJid || quotedParticipant === botLid) {
         return await sock.sendMessage(from, {
           text: '> I am already admin 🍊'
         }, { quoted: msg })
@@ -128,7 +133,7 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
       for (const jid of mentionedJid) {
         if (jid === senderJid) continue
         if (groupAdmins.includes(jid)) continue
-        if (jid === botJid) continue
+        if (jid === botJid || jid === botLid) continue
         targets.push(jid)
       }
     }
@@ -148,7 +153,7 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
 
           if (jid === senderJid) continue
           if (groupAdmins.includes(jid)) continue
-          if (jid === botJid) continue
+          if (jid === botJid || jid === botLid) continue
 
           // Check if user is in group
           const isInGroup = groupMetadata.participants.some(p => p.id === jid)
@@ -157,8 +162,10 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
       }
     }
 
-    // 10. Remove duplicates
+    // 10. Remove duplicates + FIX 2: Filter only users still in group
     targets = [...new Set(targets)]
+    const currentParticipants = groupMetadata.participants.map(p => p.id)
+    targets = targets.filter(jid => currentParticipants.includes(jid) &&!groupAdmins.includes(jid))
 
     if (!targets.length) {
       return await sock.sendMessage(from, {
@@ -179,16 +186,21 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
 
     const result = await sock.groupParticipantsUpdate(from, targets, 'promote')
 
-    // 12. Process results
+    // 12. Process results - FIX 3: Accept 409 as success
     let promoted = []
     let failed = []
 
     for (const res of result) {
       const number = res.jid.split('@')[0]
-      if (res.status === 200) {
+      // 200 = success, 409 = conflict (already admin) = also success
+      if (res.status === 200 || res.status === 409) {
         promoted.push(number)
+      } else if (res.status === 403) {
+        failed.push(`${number} - No permission`)
+      } else if (res.status === 404) {
+        failed.push(`${number} - Not in group`)
       } else {
-        failed.push(number)
+        failed.push(`${number} - Error ${res.status}`)
       }
     }
 
@@ -203,7 +215,6 @@ export default async function promote(sock, { msg, from, args, isAdmin, isBotAdm
     if (failed.length) {
       report += `│ ❌ Failed: ${failed.length}\n`
       failed.forEach(n => report += `│ • ${n}\n`)
-      report += `│ *Reason: Already admin or not in group*\n`
     }
 
     report += `╰⊷ Done 🐰`

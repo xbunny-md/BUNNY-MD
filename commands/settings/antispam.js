@@ -1,9 +1,9 @@
-// commands/antispam.js
-import { supabase } from '../lib/supabase.js'
+// commands/settings/antispam.js
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'antispam'
 export const alias = ['antisp', 'nospam']
-export const category = 'Owner'
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
 export const desc = 'Update antispam status for this group in real-time without restart'
 
 export default async function antispam(sock, { msg, from, sender, isGroup }, botSettings) {
@@ -20,12 +20,19 @@ export default async function antispam(sock, { msg, from, sender, isGroup }, bot
     const args = body.trim().split(' ').slice(1)
     const newStatus = args[0]?.toLowerCase()
 
-    // 3. Get current status
-    const { data: currentSettings } = await supabase
+    // 3. Get current status - FIXED: maybeSingle() instead of single()
+    const { data: currentSettings, error: fetchError } = await supabase
 .from('group_settings')
 .select('antispam')
 .eq('group_jid', from)
-.single()
+.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+
+    if (fetchError) {
+      console.error('Supabase fetch error:', fetchError.message)
+      return await sock.sendMessage(from, {
+        text: '> Failed to fetch current settings. Database error.'
+      }, { quoted: msg })
+    }
 
     const currentValue = currentSettings?.antispam || false
 
@@ -51,7 +58,7 @@ export default async function antispam(sock, { msg, from, sender, isGroup }, bot
       }, { quoted: msg })
     }
 
-    // 6. Update Supabase group_settings table
+    // 6. Update Supabase - SCHEMA COLUMNS: group_jid, antispam, updated_at
     const { data, error } = await supabase
 .from('group_settings')
 .upsert({

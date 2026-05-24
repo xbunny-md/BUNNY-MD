@@ -26,16 +26,16 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 
     // 3. GET CURRENT SETTINGS
     const { data: globalSettings } = await supabase
-  .from('group_settings')
-  .select('autorecord, autorecord_scope, autorecord_delay_min, autorecord_delay_max')
-  .eq('group_jid', 'global')
-  .maybeSingle()
+    .from('group_settings')
+    .select('autorecord, autorecord_scope, autorecord_delay_min, autorecord_delay_max')
+    .eq('group_jid', 'global')
+    .maybeSingle()
 
     const { data: groupSettings } = isGroup? await supabase
-  .from('group_settings')
-  .select('autorecord, autorecord_scope, autorecord_delay_min, autorecord_delay_max')
-  .eq('group_jid', from)
-  .maybeSingle() : { data: null }
+    .from('group_settings')
+    .select('autorecord, autorecord_scope, autorecord_delay_min, autorecord_delay_max')
+    .eq('group_jid', from)
+    .maybeSingle() : { data: null }
 
     const globalStatus = globalSettings?.autorecord!== false // Default true
     const groupStatus = groupSettings?.autorecord!== false
@@ -67,15 +67,15 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 │ ${botSettings.prefix}autorecord scope groups
 │ ${botSettings.prefix}autorecord delay 2000 5000
 │ ${botSettings.prefix}autorecord stats
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
     // 5. STATS
     if (action === 'stats') {
       const { count: totalMsgs } = await supabase
-   .from('message_logs')
-   .select('*', { count: 'exact', head: true })
+     .from('message_logs')
+     .select('*', { count: 'exact', head: true })
 
       let statsText = `╭─⌈ 📊 *AutoRecord Stats* ⌋\n`
       statsText += `│ Status: ${globalStatus || groupStatus? 'Active' : 'Inactive'}\n`
@@ -84,7 +84,7 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
       statsText += `│ Delay Global: ${globalMin}-${globalMax}ms\n`
       statsText += `│ Delay Group: ${groupMin}-${groupMax}ms\n`
       statsText += `│ Total Msgs Processed: ${totalMsgs || 0}\n`
-      statsText += `╰⊷ *Powered By Lupin Starnley*`
+      statsText += `╰⊷ *Powered By Bunny Tech*`
 
       return await sock.sendMessage(from, { text: statsText }, { quoted: msg })
     }
@@ -102,8 +102,8 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 
       const targetJid = isGroup? from : 'global'
       const { error } = await supabase
-  .from('group_settings')
-  .upsert({
+    .from('group_settings')
+    .upsert({
           group_jid: targetJid,
           autorecord_delay_min: minDelay,
           autorecord_delay_max: maxDelay,
@@ -122,7 +122,7 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 │ Min Delay: ${minDelay}ms
 │ Max Delay: ${maxDelay}ms
 │ Status: Applied instantly
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
@@ -137,8 +137,8 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 
       const targetJid = isGroup? from : 'global'
       const { error } = await supabase
-  .from('group_settings')
-  .upsert({
+    .from('group_settings')
+    .upsert({
           group_jid: targetJid,
           autorecord_scope: mode,
           updated_at: new Date().toISOString()
@@ -156,7 +156,7 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 │ Scope: ${mode.toUpperCase()}
 │ Effect: ${mode === 'all'? 'DM + Groups' : mode === 'groups'? 'Groups Only' : 'DM Only'}
 │ Status: Applied instantly
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
@@ -195,8 +195,8 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 
     // 9. UPDATE SUPABASE
     const { error } = await supabase
-  .from('group_settings')
-  .upsert({
+   .from('group_settings')
+   .upsert({
         group_jid: targetJid,
         autorecord: newValue,
         autorecord_scope: scopeToSet,
@@ -218,7 +218,7 @@ export default async function autorecord(sock, { msg, from, sender, isGroup, isA
 │ Old Status: ${currentValue? 'ON' : 'OFF'}
 │ Delay: ${targetJid === 'global'? globalMin : groupMin}-${targetJid === 'global'? globalMax : groupMax}ms
 │ Status: Applied instantly
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
 
     await sock.sendMessage(from, {
       text: successPayload

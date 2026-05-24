@@ -1,10 +1,6 @@
 // commands/downloader/drama.js
 import axios from 'axios'
 import yts from 'yt-search'
-import ytdl from '@distube/ytdl-core'
-import fs from 'fs'
-import path from 'path'
-import os from 'os'
 
 export const name = 'drama'
 export const alias = ['kdrama', 'series', 'ep']
@@ -12,8 +8,7 @@ export const category = 'Downloader'
 export const desc = 'Search and download drama episodes from YouTube'
 
 export default async function drama(sock, { msg, from, args }, botSettings) {
-  const tempFilePath = path.join(os.tmpdir(), `bunny_drama_${Date.now()}.mp4`)
-
+  let processingMsg = null
   try {
     // 1. Extract query from args, message, or quoted message
     const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
@@ -34,7 +29,7 @@ export default async function drama(sock, { msg, from, args }, botSettings) {
       react: { text: '🧚‍♂️', key: msg.key }
     })
 
-    const processingMsg = await sock.sendMessage(from, {
+    processingMsg = await sock.sendMessage(from, {
       text: `> Searching episode...`
     }, { quoted: msg })
 
@@ -54,6 +49,7 @@ export default async function drama(sock, { msg, from, args }, botSettings) {
 
     const videoInfo = {
       url: video.url,
+      videoId: video.videoId,
       title: video.title,
       author: video.author.name,
       duration: video.seconds,
@@ -76,7 +72,7 @@ export default async function drama(sock, { msg, from, args }, botSettings) {
         : `${min}:${sec.toString().padStart(2, '0')}`
     }
 
-    // 7. Send info card - PRO LOOK ONLY, NO TECH SECRETS
+    // 7. Send info card - NO IMAGE TO SAVE RAM
     const infoPayload = `╭─⌈ 🧚‍♂️ *${botSettings.botname || 'BUNNY MD'}* ⌋
 │ Drama: ${videoInfo.title.slice(0, 45)}
 │ Channel: ${videoInfo.author}
@@ -86,93 +82,86 @@ export default async function drama(sock, { msg, from, args }, botSettings) {
 ╰⊷ Preparing download...`
 
     await sock.sendMessage(from, {
-      image: { url: videoInfo.thumbnail },
-      caption: infoPayload
+      text: infoPayload
     }, { quoted: msg })
 
-    // 8. Download with smart chunking - IDM STYLE but silent
-    let downloadSuccess = false
+    let downloadUrl = null
 
-    // Primary: @distube/ytdl-core with highWaterMark for speed
+    // 8. API 1 - savetube.me - PRIMARY
     try {
-      await new Promise((resolve, reject) => {
-        const stream = ytdl(videoInfo.url, {
-          filter: 'videoandaudio',
-          quality: 'highest',
-          highWaterMark: 1 << 25, // 32MB buffer = faster download
-          requestOptions: {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
+      const res1 = await axios.get(`https://www.savetube.me/api/v1/info`, {
+        params: { url: videoInfo.url },
+        timeout: 7000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      })
+
+      if (res1.data?.data?.video_formats) {
+        const formats = res1.data.data.video_formats
+        const hd720 = formats.find(f => f.quality === '720p' || f.quality === '720')
+        const sd480 = formats.find(f => f.quality === '480p' || f.quality === '480')
+        const sd360 = formats.find(f => f.quality === '360p' || f.quality === '360')
+        downloadUrl = hd720?.url || sd480?.url || sd360?.url || formats[0]?.url
+      }
+    } catch (e) {
+      console.log('[DRAMA] API 1 savetube failed:', e.message)
+    }
+
+    // 9. API 2 - y2mate - FALLBACK
+    if (!downloadUrl) {
+      try {
+        const res2 = await axios.get(`https://www.y2mate.com/mates/analyzeV2/ajax`, {
+          params: {
+            k_query: videoInfo.url,
+            k_page: 'home',
+            q_auto: 0
+          },
+          timeout: 7000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
         })
 
-        const writeStream = fs.createWriteStream(tempFilePath)
-        stream.pipe(writeStream)
-
-        stream.on('error', reject)
-        writeStream.on('finish', () => {
-          downloadSuccess = true
-          resolve()
-        })
-        writeStream.on('error', reject)
-      })
-    } catch (e) {
-      console.log('[DRAMA] Primary download failed, trying fallback...')
-    }
-
-    // Fallback: y2mate API
-    if (!downloadSuccess) {
-      try {
-        const videoId = ytdl.getVideoID(videoInfo.url)
-        const res = await axios.get(`https://www.y2mate.com/mates/analyzeV2/ajax`, {
-          params: {
-            k_query: `https://www.youtube.com/watch?v=${videoId}`,
-            k_page: 'home',
-            hl: 'en',
-            q_auto: 0
-          },
-          timeout: 25000
-        })
-
-        const links = res.data.links?.mp4
+        const links = res2.data.links?.mp4
         const hd720 = links?.['22'] || links?.['720'] || links?.['18'] || links?.['360']
-
-        if (hd720?.url) {
-          const videoRes = await axios.get(hd720.url, {
-            responseType: 'stream',
-            timeout: 120000,
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-          })
-          const writeStream = fs.createWriteStream(tempFilePath)
-          videoRes.data.pipe(writeStream)
-
-          await new Promise((resolve, reject) => {
-            writeStream.on('finish', resolve)
-            writeStream.on('error', reject)
-          })
-          downloadSuccess = true
-        }
+        downloadUrl = hd720?.url
       } catch (e) {
-        console.log('[DRAMA] Fallback failed')
+        console.log('[DRAMA] API 2 y2mate failed:', e.message)
       }
     }
 
-    if (!downloadSuccess ||!fs.existsSync(tempFilePath)) {
+    // 10. API 3 - cobalt.tools - FALLBACK
+    if (!downloadUrl) {
+      try {
+        const res3 = await axios.post('https://co.wuk.sh/api/json', {
+          url: videoInfo.url,
+          vQuality: '720',
+          vCodec: 'h264',
+          vFormat: 'mp4'
+        }, {
+          timeout: 7000,
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          }
+        })
+
+        if (res3.data?.status === 'stream' || res3.data?.status === 'redirect') {
+          downloadUrl = res3.data.url
+        }
+      } catch (e) {
+        console.log('[DRAMA] API 3 cobalt failed:', e.message)
+      }
+    }
+
+    if (!downloadUrl) {
       throw new Error('Failed to retrieve episode')
     }
 
-    // 9. Check file size - WhatsApp limit 100MB
-    const stats = fs.statSync(tempFilePath)
-    const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2)
-    if (stats.size > 95 * 1024 * 1024) {
-      fs.unlinkSync(tempFilePath)
-      throw new Error(`Episode too large: ${fileSizeMB}MB\nWhatsApp limit is 100MB. Try shorter episodes.`)
-    }
-
-    // 10. Send video - CLEAN MESSAGE, NO TECH TALK
+    // 11. Send video - STREAM URL DIRECTLY, NO DISK WRITE
     await sock.sendMessage(from, {
-      video: { url: tempFilePath },
+      video: { url: downloadUrl },
       mimetype: 'video/mp4',
       fileName: `${query.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 40)}.mp4`,
       caption: `> ${query}\n> Done. Enjoy 🐰`,
@@ -182,14 +171,16 @@ export default async function drama(sock, { msg, from, args }, botSettings) {
           body: `${videoInfo.author} • ${formatDuration(videoInfo.duration)}`,
           thumbnailUrl: videoInfo.thumbnail,
           mediaType: 2,
-          renderLargerThumbnail: true,
+          renderLargerThumbnail: false, // ✅ RENDER SAFE
           sourceUrl: videoInfo.url
         }
       }
     }, { quoted: msg })
 
-    // 11. Delete processing message and react done ✅
-    await sock.sendMessage(from, { delete: processingMsg.key })
+    // 12. Delete processing message and react done ✅
+    if (processingMsg) {
+      await sock.sendMessage(from, { delete: processingMsg.key }).catch(() => {})
+    }
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {
@@ -200,19 +191,21 @@ export default async function drama(sock, { msg, from, args }, botSettings) {
       errorMsg = `> Episode not found on YouTube\n> Try: ${botSettings.prefix}drama Queen of Tears ep10`
     } else if (error.message.includes('too long')) {
       errorMsg = `> ${error.message}`
-    } else if (error.message.includes('too large')) {
-      errorMsg = `> ${error.message}`
     } else if (error.message.includes('unavailable')) {
       errorMsg = '> Episode is unavailable or restricted'
+    } else if (error.message.includes('timeout') || error.code === 'ECONNABORTED') {
+      errorMsg = '> Server timeout. Try again'
+    } else if (error.message.includes('ENOTFOUND')) {
+      errorMsg = '> All APIs down. Try again later'
     }
 
     await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
     await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
 
-  } finally {
-    // Silent cleanup - no one knows
-    if (fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath)
+    if (processingMsg) {
+      try {
+        await sock.sendMessage(from, { delete: processingMsg.key })
+      } catch {}
     }
   }
 }

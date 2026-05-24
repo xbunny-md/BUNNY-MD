@@ -3,221 +3,25 @@ import { supabase } from '../lib/supabase.js'
 
 const banCache = new Map() // RAM cache: `${group}_${user}` -> banData
 const CACHE_TTL = 60000 // 1 minute cache
+const NEGATIVE_CACHE_TTL = 30000 // 30s cache kama hajafungiwa
 
-export default async function shut(sock, { msg, from, sender, isGroup, isBotAdmin, isAdmin }, botSettings) {
+export default async function shut(sock, { msg, from, sender, isGroup, isBotAdmin, groupMetadata }, botSettings) {
   try {
+    // 1. SKIP CONDITIONS
     if (!msg || msg.key.fromMe) return
     if (!isGroup) return // Shut inafanya kazi groups tu
+    if (!isBotAdmin) return // Siwezi kufuta kama si admin
 
-    const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
-    const args = body.trim().split(' ')
-    const command = args[0]?.toLowerCase()
-    const prefix = botSettings.prefix
+    // Skip protocol messages, deletes, etc
+    if (msg.message?.protocolMessage) return
+    if (!msg.message) return
 
-    // 1. HANDLE COMMANDS -.shut on/temp/perm/off/list
-    if (command === `${prefix}shut`) {
-      if (!isAdmin) return await sock.sendMessage(from, { text: '> Admin only command' }, { quoted: msg })
-
-      const action = args[1]?.toLowerCase()
-      const mentionedJid = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || []
-      const quotedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant
-
-      // Get target user - from reply or mention
-      let targetUser = quotedParticipant || mentionedJid[0]
-      if (!targetUser && args[2]) {
-        targetUser = args[2].replace('@', '') + '@s.whatsapp.net'
-      }
-
-      // SHUT ON / TEMP / PERM
-      if (['on', 'temp', 'perm', 'kick'].includes(action)) {
-        if (!targetUser) return await sock.sendMessage(from, { text: '> Reply message ya mtu au mention @mtu' }, { quoted: msg })
-
-        let type = 'temp'
-        let duration = 300 // 5 min default
-        let reason = 'No reason'
-
-        if (action === 'perm') {
-          type = 'perm'
-          duration = null
-          reason = args.slice(2).join(' ') || 'Permanent ban'
-        } else if (action === 'kick') {
-          type = 'kick_temp'
-          duration = parseInt(args[2]) * 60 || 1800 // default 30min
-          reason = args.slice(3).join(' ') || 'Timeout'
-        } else if (action === 'temp') {
-          type = 'temp'
-          duration = parseInt(args[2]) * 60 || 300 // default 5min
-          reason = args.slice(3).join(' ') || 'Temporary ban'
-        } else if (action === 'on') {
-          type = 'temp'
-          duration = 300 // 5min
-          reason = args.slice(2).join(' ') || 'Temporary ban'
-        }
-
-        const expiresAt = duration? new Date(Date.now() + duration * 1000).toISOString() : null
-
-        // Save to Supabase
-        const { error } = await supabase
-         .from('shut_list')
-         .upsert({
-            group_jid: from,
-            user_jid: targetUser,
-            type: type,
-            duration: duration,
-            expires_at: expiresAt,
-            reason: reason,
-            banned_by: sender,
-            is_active: true
-          }, { onConflict: 'group_jid,user_jid' })
-
-        if (error) {
-          console.log('[SHUT DB ERROR]', error.message)
-          return await sock.sendMessage(from, { text: '> DB error. Jaribu tena.' }, { quoted: msg })
-        }
-
-        // Update cache
-        banCache.set(`${from}_${targetUser}`, {
-          type,
-          expires_at: expiresAt,
-          reason
-        })
-
-        // Kick if kick_temp
-        if (type === 'kick_temp') {
-          if (!isBotAdmin) return await sock.sendMessage(from, { text: '> Bot si admin, siwezi kick' }, { quoted: msg })
-          await sock.groupParticipantsUpdate(from,, 'remove')
-        }
-
-        // Log
-        await supabase.from('shut_logs').insert({
-          group_jid: from,
-          user_jid: targetUser,
-          action: type === 'kick_temp'? 'kicked' : 'banned',
-          type: type,
-          admin_jid: sender,
-          reason: reason,
-          duration: duration
-        })
-
-        await sock.sendMessage(from, { react: { text: '🔒', key: msg.key } })
-
-        const timeText = type === 'perm'? 'milele' :
-                        type === 'kick_temp'? `kwa dakika ${duration / 60}` :
-                        `kwa dakika ${duration / 60}`
-
-        return await sock.sendMessage(from, {
-          text: `╭─⌈ 🔒 *Shut Activated* ⌋
-│ User: @${targetUser.split('@')[0]}
-│ Type: ${type === 'kick_temp'? 'Kick Timeout' : type === 'perm'? 'Permanent' : 'Temporary'}
-│ Duration: ${timeText}
-│ Reason: ${reason}
-│
-│ ${type === 'kick_temp'? 'Ametolewa group. Atarudishwa automatic.' : 'Messages zake zitafutwa automatic.'}
-╰⊷ *Powered By Bunny Tech*`,
-          mentions:
-        }, { quoted: msg })
-      }
-
-      // SHUT OFF - Unban
-      if (action === 'off') {
-        if (!targetUser) return await sock.sendMessage(from, { text: '> Reply message ya mtu au mention @mtu' }, { quoted: msg })
-
-        const { error } = await supabase
-         .from('shut_list')
-         .update({ is_active: false })
-         .eq('group_jid', from)
-         .eq('user_jid', targetUser)
-
-        if (error) return await sock.sendMessage(from, { text: '> DB error' }, { quoted: msg })
-
-        // Clear cache
-        banCache.delete(`${from}_${targetUser}`)
-
-        // Log
-        await supabase.from('shut_logs').insert({
-          group_jid: from,
-          user_jid: targetUser,
-          action: 'unbanned',
-          admin_jid: sender
-        })
-
-        await sock.sendMessage(from, { react: { text: '🔓', key: msg.key } })
-        return await sock.sendMessage(from, {
-          text: `╭─⌈ 🔓 *Shut Deactivated* ⌋
-│ User: @${targetUser.split('@')[0]}
-│ Amefunguliwa
-│ Anaweza kuongea tena
-╰⊷ *Powered By Bunny Tech*`,
-          mentions:
-        }, { quoted: msg })
-      }
-
-      // SHUT LIST - Show active bans
-      if (action === 'list') {
-        const { data: bans } = await supabase
-         .from('active_shut_bans')
-         .select('*')
-         .eq('group_jid', from)
-
-        if (!bans || bans.length === 0) {
-          return await sock.sendMessage(from, { text: '> Hakuna aliyefungiwa group hili' }, { quoted: msg })
-        }
-
-        let listText = `╭─⌈ 🔒 *Shut List* ⌋\n`
-        bans.forEach((ban, i) => {
-          const icon = ban.type === 'perm'? '🔴' : ban.type === 'kick_temp'? '👢' : '🟡'
-          listText += `│ ${i + 1}. ${icon} @${ban.user_jid.split('@')[0]}\n`
-          listText += `│ Type: ${ban.type} | Left: ${ban.time_remaining}\n`
-          listText += `│ Reason: ${ban.reason}\n│\n`
-        })
-        listText += `╰⊷ *Powered By Bunny Tech*`
-
-        return await sock.sendMessage(from, {
-          text: listText,
-          mentions: bans.map(b => b.user_jid)
-        }, { quoted: msg })
-      }
-
-      // SHUT STATS - User stats
-      if (action === 'stats') {
-        const user = targetUser || sender
-        const { data: stats } = await supabase
-         .from('shut_stats')
-         .select('*')
-         .eq('group_jid', from)
-         .eq('user_jid', user)
-         .maybeSingle()
-
-        if (!stats) {
-          return await sock.sendMessage(from, { text: '> @' + user.split('@')[0] + ' hajawahi kufungiwa', mentions: }, { quoted: msg })
-        }
-
-        return await sock.sendMessage(from, {
-          text: `╭─⌈ 📊 *Shut Stats* ⌋
-│ User: @${user.split('@')[0]}
-│ Total Bans: ${stats.total_bans}
-│ Temp: ${stats.total_temp_bans} | Perm: ${stats.total_perm_bans}
-│ Kicks: ${stats.total_kicks}
-│ Messages Deleted: ${stats.total_messages_deleted}
-│ Strikes: ${stats.strikes}/3
-│ Last Ban: ${stats.last_banned_at? new Date(stats.last_banned_at).toLocaleString() : 'Never'}
-╰⊷ *Powered By Bunny Tech*`,
-          mentions:
-        }, { quoted: msg })
-      }
-
-      return await sock.sendMessage(from, {
-        text: `> Usage:\n${prefix}shut on @user - Temp 5min\n${prefix}shut temp 10 @user reason\n${prefix}shut perm @user reason\n${prefix}shut kick 30 @user\n${prefix}shut off @user\n${prefix}shut list\n${prefix}shut stats @user`
-      }, { quoted: msg })
-    }
-
-    // 2. CHECK EVERY MESSAGE - AUTO DELETE
+    // 2. CHECK CACHE FIRST - RAM FAST
     const cacheKey = `${from}_${sender}`
     let banData = banCache.get(cacheKey)
 
-    // Check cache first - RAM fast
-    if (!banData) {
-      // Query Supabase - use function
+    // 3. IF NOT IN CACHE, CHECK SUPABASE
+    if (banData === undefined) {
       const { data } = await supabase.rpc('get_active_shut', {
         p_group_jid: from,
         p_user_jid: sender
@@ -225,61 +29,63 @@ export default async function shut(sock, { msg, from, sender, isGroup, isBotAdmi
 
       if (data && data.length > 0) {
         banData = data[0]
-        // Cache for 1 minute
+        // Cache positive result 1 minute
         banCache.set(cacheKey, banData)
         setTimeout(() => banCache.delete(cacheKey), CACHE_TTL)
       } else {
-        // Not banned, cache negative for 30s
+        // Cache negative result 30s - asirudie ku-query kila message
         banCache.set(cacheKey, null)
-        setTimeout(() => banCache.delete(cacheKey), 30000)
+        setTimeout(() => banCache.delete(cacheKey), NEGATIVE_CACHE_TTL)
         return
       }
     }
 
     if (!banData) return
 
-    // User is banned - DELETE MESSAGE
-    if (!isBotAdmin) {
-      console.log('[SHUT] Bot not admin, cannot delete')
-      return
-    }
-
+    // 4. USER IS BANNED - DELETE MESSAGE
     try {
-      // ANTI-BAN: Typing delay
+      // ANTI-BAN: Typing delay kidogo
       await sock.presenceSubscribe(from)
       await sock.sendPresenceUpdate('composing', from)
-      await new Promise(r => setTimeout(r, Math.random() * 400 + 600))
+      await new Promise(r => setTimeout(r, Math.random() * 400 + 400))
 
-      // DELETE
+      // DELETE MESSAGE
       await sock.sendMessage(from, { delete: msg.key })
 
-      // Increment count
+      // INCREMENT DELETE COUNT
       await supabase.rpc('increment_shut_deleted', {
         p_group_jid: from,
         p_user_jid: sender
       })
 
-      // Log deletion
-      await supabase.from('shut_logs').insert({
+      // LOG DELETION - fire and forget
+      supabase.from('shut_logs').insert({
         group_jid: from,
         user_jid: sender,
         action: 'message_deleted',
         type: banData.type,
-        metadata: { message_id: msg.key.id, type: Object.keys(msg.message)[0] }
-      })
+        metadata: {
+          message_id: msg.key.id,
+          message_type: Object.keys(msg.message)[0],
+          content_preview: (msg.message?.conversation || msg.message?.extendedTextMessage?.text || '').slice(0, 50)
+        }
+      }).then(() => {}).catch(() => {})
 
-      // Optional: Warn user once per 10 messages
-      const shouldWarn = Math.random() < 0.1 // 10% chance
+      // WARN USER - 5% chance tu ili isisumbue
+      const shouldWarn = Math.random() < 0.05
       if (shouldWarn) {
         const timeLeft = banData.time_left === -1? 'milele' : `${Math.floor(banData.time_left / 60)} dakika`
         await sock.sendMessage(from, {
-          text: `⚠️ @${sender.split('@')[0]} bado umefungiwa ${timeLeft}. Reason: ${banData.reason}`,
-          mentions:
+          text: `⚠️ @${sender.split('@')[0]} bado umefungiwa ${timeLeft}. Sababu: ${banData.reason}`,
+          mentions: [sender]
         })
       }
 
     } catch (delErr) {
-      console.log('[SHUT DELETE ERROR]', delErr.message)
+      // Kama delete fails, maybe message too old
+      if (!delErr.message.includes('not authorized')) {
+        console.log('[SHUT DELETE ERROR]', delErr.message)
+      }
     }
 
   } catch (err) {
@@ -288,24 +94,80 @@ export default async function shut(sock, { msg, from, sender, isGroup, isBotAdmi
 }
 
 // CRON JOB: Auto-expire bans + Auto-add kick_temp users
-// Run this kila dakika 1 na node-cron au external cron
-export async function cronAutoShut() {
+// Itwa na index.js kila dakika 1
+export async function cronAutoShut(sock) {
   try {
     // 1. Expire old bans
-    await supabase.rpc('auto_expire_shut_bans')
+    const { data: expiredCount } = await supabase.rpc('auto_expire_shut_bans')
+    if (expiredCount > 0) {
+      console.log(`[SHUT CRON] Expired ${expiredCount} bans`)
+    }
 
     // 2. Get kick_temp users to add back
     const { data: toAddBack } = await supabase
-     .from('shut_list')
-     .select('id, group_jid, user_jid')
-     .eq('type', 'kick_temp')
-     .eq('is_active', false)
-     .lt('expires_at', new Date().toISOString())
-     .gte('expires_at', new Date(Date.now() - 60000).toISOString()) // Last 1 minute
+    .from('shut_list')
+    .select('id, group_jid, user_jid')
+    .eq('type', 'kick_temp')
+    .eq('is_active', true)
+    .lt('expires_at', new Date().toISOString())
+    .gte('expires_at', new Date(Date.now() - 60000).toISOString()) // Last 1 minute only
 
-    // Note: Actual sock.add iko nje, hii ni SQL tu
-    // Unahitaji kuiita kutoka index.js yako
-    return toAddBack || []
+    if (!toAddBack || toAddBack.length === 0) return []
+
+    // 3. Add them back
+    const results = []
+    for (const user of toAddBack) {
+      try {
+        // Check if bot is admin in that group
+        const groupMeta = await sock.groupMetadata(user.group_jid)
+        const botJid = sock.user.id
+        const botParticipant = groupMeta.participants.find(p => p.id === botJid)
+
+        if (botParticipant?.admin === null) {
+          console.log(`[SHUT CRON] Bot not admin in ${user.group_jid}, skipping add`)
+          continue
+        }
+
+        await sock.groupParticipantsUpdate(user.group_jid, [user.user_jid], 'add')
+
+        // Mark as inactive
+        await supabase
+        .from('shut_list')
+        .update({ is_active: false })
+        .eq('id', user.id)
+
+        // Log
+        await supabase.from('shut_logs').insert({
+          group_jid: user.group_jid,
+          user_jid: user.user_jid,
+          action: 'added_back',
+          type: 'kick_temp',
+          reason: 'Timeout expired'
+        })
+
+        // Notify group
+        await sock.sendMessage(user.group_jid, {
+          text: `✅ @${user.user_jid.split('@')[0]} timeout imeisha, karibu tena`,
+          mentions: [user.user_jid]
+        })
+
+        results.push(user)
+        console.log(`[SHUT CRON] Added back ${user.user_jid} to ${user.group_jid}`)
+
+        // Anti-ban delay
+        await new Promise(r => setTimeout(r, 2000))
+
+      } catch (e) {
+        console.log('[SHUT AUTO-ADD ERROR]', e.message)
+        // Kama add fails, mark as inactive anyway ili isirudie
+        await supabase
+        .from('shut_list')
+        .update({ is_active: false })
+        .eq('id', user.id)
+      }
+    }
+
+    return results
 
   } catch (err) {
     console.log('[SHUT CRON ERROR]', err.message)

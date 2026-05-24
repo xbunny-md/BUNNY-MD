@@ -2,90 +2,191 @@
 import { supabase } from '../../lib/supabase.js'
 
 export const name = 'anticall'
-export const alias = ['antic', 'nocall']
-export const category = 'Settings' // ✅ FIXED: Settings sio Owner
-export const desc = 'Update anticall status for this group in real-time without restart'
+export const alias = ['antic', 'nocall', 'setanticall']
+export const category = 'Settings'
+export const desc = 'Full anticall control: on/off, global/group, stats, unblock - realtime'
 
-export default async function anticall(sock, { msg, from, sender, isGroup }, botSettings) {
+export default async function anticall(sock, { msg, from, sender, isGroup, isAdmin }, botSettings) {
   try {
-    // 1. GROUP ONLY CHECK
-    if (!isGroup) {
+    // 1. ADMIN/OWNER CHECK - Owner anaruhusiwa private
+    const isOwner = sender === botSettings.owner_jid
+    if (!isOwner && (!isGroup ||!isAdmin)) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
       return await sock.sendMessage(from, {
-        text: '> This command works in groups only.'
+        text: '> Admin only command.'
       }, { quoted: msg })
     }
 
-    // 2. Get new status from args
+    // 2. PARSE ARGS
     const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
     const args = body.trim().split(' ').slice(1)
-    const newStatus = args[0]?.toLowerCase()
+    const action = args[0]?.toLowerCase()
+    const mode = args[1]?.toLowerCase()
 
-    // 3. Get current status - FIXED: maybeSingle() instead of single()
-    const { data: currentSettings, error: fetchError } = await supabase
+    // 3. GET CURRENT SETTINGS
+    const { data: globalSettings } = await supabase
+.from('group_settings')
+.select('anticall')
+.eq('group_jid', 'global')
+.maybeSingle()
+
+    const { data: groupSettings } = isGroup? await supabase
 .from('group_settings')
 .select('anticall')
 .eq('group_jid', from)
-.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+.maybeSingle() : { data: null }
 
-    if (fetchError) {
-      console.error('Supabase fetch error:', fetchError.message)
+    const globalStatus = globalSettings?.anticall || false
+    const groupStatus = groupSettings?.anticall || false
+
+    // 4. HELP + STATS IF NO ARGS
+    if (!action) {
+      const { count: totalCalls } = await supabase
+ .from('call_logs')
+ .select('*', { count: 'exact', head: true })
+
+      const { count: groupCalls } = isGroup? await supabase
+ .from('call_logs')
+ .select('*', { count: 'exact', head: true })
+ .eq('group_jid', from) : { count: 0 }
+
+      await sock.sendMessage(from, { react: { text: '📵', key: msg.key } })
+
       return await sock.sendMessage(from, {
-        text: '> Failed to fetch current settings. Database error.'
+        text: `╭─⌈ 📵 *AntiCall Control* ⌋
+│ Global: ${globalStatus? 'ON ✅' : 'OFF ❌'}
+│ Group: ${groupStatus? 'ON ✅' : 'OFF ❌'}
+│ Total Blocked: ${totalCalls || 0}
+│ Group Blocked: ${groupCalls || 0}
+│ Auto Block: 3 attempts
+│
+│ *Usage:*
+│ ${botSettings.prefix}anticall on global
+│ ${botSettings.prefix}anticall off group
+│ ${botSettings.prefix}anticall stats
+│ ${botSettings.prefix}anticall list
+│ ${botSettings.prefix}anticall unblock 255xxx
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
-    const currentValue = currentSettings?.anticall || false
+    // 5. STATS
+    if (action === 'stats') {
+      const { data: recentCalls, count } = await supabase
+ .from('call_logs')
+ .select('caller_name, call_type, status, called_at', { count: 'exact' })
+ .order('called_at', { ascending: false })
+ .limit(5)
 
-    if (!newStatus) {
-      return await sock.sendMessage(from, {
-        text: `> Usage: ${botSettings.prefix}anticall <on/off>\n> Example: ${botSettings.prefix}anticall on\n> Current: ${currentValue? 'on' : 'off'}`
-      }, { quoted: msg })
+      let statsText = `╭─⌈ 📊 *AntiCall Stats* ⌋\n`
+      statsText += `│ Total: ${count || 0}\n`
+      statsText += `│ Global: ${globalStatus? 'ON' : 'OFF'}\n`
+      statsText += `│ Group: ${groupStatus? 'ON' : 'OFF'}\n`
+
+      if (recentCalls?.length > 0) {
+        statsText += `│\n│ *Recent:*\n`
+        recentCalls.forEach(c => {
+          const time = new Date(c.called_at).toLocaleTimeString()
+          statsText += `│ • ${c.caller_name}: ${c.call_type} - ${time}\n`
+        })
+      }
+      statsText += `╰⊷ *Powered By Bunny Tech*`
+
+      return await sock.sendMessage(from, { text: statsText }, { quoted: msg })
     }
 
-    // 4. Block invalid options
-    const validOptions = ['on', 'off']
-    if (!validOptions.includes(newStatus)) {
-      return await sock.sendMessage(from, {
-        text: `> Status "${newStatus}" is invalid. Use: on or off`
-      }, { quoted: msg })
+    // 6. LIST WARNINGS
+    if (action === 'list') {
+      const { data: warnings } = await supabase
+ .from('user_warnings')
+ .select('user_jid, count')
+ .eq('warning_type', 'call')
+ .gte('count', 1)
+ .order('count', { ascending: false })
+ .limit(10)
+
+      if (!warnings || warnings.length === 0) {
+        return await sock.sendMessage(from, { text: `> No call warnings found.` }, { quoted: msg })
+      }
+
+      let listText = `╭─⌈ ⚠️ *Call Warnings* ⌋\n`
+      warnings.forEach((w, i) => {
+        const user = w.user_jid.split('@')[0]
+        const status = w.count >= 3? 'BLOCKED' : `${w.count}/3`
+        listText += `│ ${i + 1}. ${user}: ${status}\n`
+      })
+      listText += `╰⊷ *Powered By Bunny Tech*`
+
+      return await sock.sendMessage(from, { text: listText }, { quoted: msg })
     }
 
-    // 5. Prevent same status
-    const newValue = newStatus === 'on'? true : false
+    // 7. UNBLOCK
+    if (action === 'unblock') {
+      const targetUser = mode || args[1]
+      if (!targetUser) {
+        return await sock.sendMessage(from, { text: `> Usage: ${botSettings.prefix}anticall unblock 255xxx` }, { quoted: msg })
+      }
+
+      const userJid = targetUser.includes('@')? targetUser : `${targetUser}@s.whatsapp.net`
+
+      try {
+        await sock.updateBlockStatus(userJid, 'unblock')
+        await supabase.from('user_warnings').delete().eq('user_jid', userJid).eq('warning_type', 'call')
+
+        await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+        return await sock.sendMessage(from, {
+          text: `╭─⌈ ✅ *User Unblocked* ⌋
+│ User: @${userJid.split('@')[0]}
+│ Status: Unblocked
+╰⊷ *Powered By Bunny Tech*`,
+          mentions: [userJid]
+        }, { quoted: msg })
+      } catch (err) {
+        return await sock.sendMessage(from, { text: `> Failed: ${err.message}` }, { quoted: msg })
+      }
+    }
+
+    // 8. ON/OFF VALIDATION
+    const validOptions = ['on', 'off', 'enable', 'disable', '1', '0']
+    if (!validOptions.includes(action)) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, { text: `> Invalid. Use: on/off, stats, list, unblock` }, { quoted: msg })
+    }
+
+    const newValue = ['on', 'enable', '1'].includes(action)? true : false
+    const targetJid = mode === 'group' && isGroup? from : 'global'
+    const currentValue = targetJid === 'global'? globalStatus : groupStatus
+
     if (newValue === currentValue) {
-      return await sock.sendMessage(from, {
-        text: `> Anticall is already set to: ${newStatus}`
-      }, { quoted: msg })
+      await sock.sendMessage(from, { react: { text: '⚠️', key: msg.key } })
+      return await sock.sendMessage(from, { text: `> Anticall ${targetJid === 'global'? 'Global' : 'Group'} already ${action}` }, { quoted: msg })
     }
 
-    // 6. Update Supabase - SCHEMA COLUMNS: group_jid, anticall, updated_at
-    const { data, error } = await supabase
+    // 9. UPDATE SUPABASE
+    const { error } = await supabase
 .from('group_settings')
 .upsert({
-       group_jid: from,
-       anticall: newValue,
-       updated_at: new Date().toISOString()
-     }, { onConflict: 'group_jid' })
-.select()
+        group_jid: targetJid,
+        anticall: newValue,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'group_jid' })
 
     if (error) {
-      console.error('Supabase update error:', error.message)
-      return await sock.sendMessage(from, {
-        text: '> Failed to update anticall. Database error.'
-      }, { quoted: msg })
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, { text: '> Database error.' }, { quoted: msg })
     }
 
-    // 7. React + Success message
-    await sock.sendMessage(from, {
-      react: { text: '📞', key: msg.key }
-    })
+    // 10. SUCCESS
+    await sock.sendMessage(from, { react: { text: newValue? '✅' : '❌', key: msg.key } })
 
     const successPayload =
-`╭─⌈ 🧵 *Settings Updated* ⌋
-│ Anticall changed to: ${newStatus}
-│ Old Status: ${currentValue? 'on' : 'off'}
+`╭─⌈ 📵 *Settings Updated* ⌋
+│ Mode: ${targetJid === 'global'? 'Global 🌍' : 'Group Only'}
+│ Anticall: ${newValue? 'ON ✅' : 'OFF ❌'}
+│ Old Status: ${currentValue? 'ON' : 'OFF'}
+│ Auto Block: 3 attempts
 │ Status: Applied instantly
-╰⊷ *${botSettings.botname || 'BUNNY MD'}*`
+╰⊷ *Powered By Bunny Tech*`
 
     await sock.sendMessage(from, {
       text: successPayload
@@ -93,8 +194,7 @@ export default async function anticall(sock, { msg, from, sender, isGroup }, bot
 
   } catch (commandException) {
     console.error(`[ANTICALL ERROR]`, commandException.message)
-    await sock.sendMessage(from, {
-      text: '> Failed to update anticall. Check database connection.'
-    }, { quoted: msg })
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+    await sock.sendMessage(from, { text: '> Failed. Check database.' }, { quoted: msg })
   }
 }

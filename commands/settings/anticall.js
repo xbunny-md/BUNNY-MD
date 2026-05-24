@@ -1,9 +1,9 @@
-// commands/anticall.js
-import { supabase } from '../lib/supabase.js'
+// commands/settings/anticall.js
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'anticall'
 export const alias = ['antic', 'nocall']
-export const category = 'Owner'
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
 export const desc = 'Update anticall status for this group in real-time without restart'
 
 export default async function anticall(sock, { msg, from, sender, isGroup }, botSettings) {
@@ -20,12 +20,19 @@ export default async function anticall(sock, { msg, from, sender, isGroup }, bot
     const args = body.trim().split(' ').slice(1)
     const newStatus = args[0]?.toLowerCase()
 
-    // 3. Get current status - SCHEMA: group_settings.anticall
-    const { data: currentSettings } = await supabase
+    // 3. Get current status - FIXED: maybeSingle() instead of single()
+    const { data: currentSettings, error: fetchError } = await supabase
 .from('group_settings')
 .select('anticall')
 .eq('group_jid', from)
-.single()
+.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+
+    if (fetchError) {
+      console.error('Supabase fetch error:', fetchError.message)
+      return await sock.sendMessage(from, {
+        text: '> Failed to fetch current settings. Database error.'
+      }, { quoted: msg })
+    }
 
     const currentValue = currentSettings?.anticall || false
 

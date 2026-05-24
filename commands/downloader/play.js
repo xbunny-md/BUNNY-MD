@@ -1,9 +1,6 @@
 // commands/downloader/play.js
-import fs from 'fs'
-import path from 'path'
-import os from 'os'
+import axios from 'axios'
 import yts from 'yt-search'
-import ytdl from '@distube/ytdl-core'
 
 export const name = 'play'
 export const alias = ['song', 'ytaudio', 'music']
@@ -11,8 +8,7 @@ export const category = 'Downloader'
 export const desc = 'Search and download music from YouTube with thumbnail preview'
 
 export default async function play(sock, { msg, from, args }, botSettings) {
-  const tempFilePath = path.join(os.tmpdir(), `bunny_${Date.now()}.mp3`)
-
+  let processingMsg = null
   try {
     const query = args.join(' ')
     if (!query) {
@@ -25,12 +21,14 @@ export default async function play(sock, { msg, from, args }, botSettings) {
       react: { text: '🎵', key: msg.key }
     })
 
+    processingMsg = await sock.sendMessage(from, {
+      text: `> Searching for "${query}"...`
+    }, { quoted: msg })
+
     // 1. Search YouTube
     const searchResult = await yts(query)
     if (!searchResult.videos.length) {
-      return await sock.sendMessage(from, {
-        text: `> No results found for "${query}"`
-      }, { quoted: msg })
+      throw new Error('No results found')
     }
 
     const video = searchResult.videos[0]
@@ -45,12 +43,10 @@ export default async function play(sock, { msg, from, args }, botSettings) {
     }
 
     if (totalSeconds > 600) {
-      return await sock.sendMessage(from, {
-        text: `> Song too long: ${video.timestamp}\n> Max duration is 10:00 minutes`
-      }, { quoted: msg })
+      throw new Error(`Song too long: ${video.timestamp}\nMax duration is 10:00 minutes`)
     }
 
-    // 3. Send info card
+    // 3. Send info card - NO IMAGE TO SAVE RAM
     const infoPayload =
 `╭─⌈ 🎵 *${botSettings.botname || 'BUNNY MD'}* ⌋
 │ Title: ${video.title.slice(0, 40)}
@@ -61,47 +57,82 @@ export default async function play(sock, { msg, from, args }, botSettings) {
 ╰⊷ Downloading audio...`
 
     await sock.sendMessage(from, {
-      image: { url: video.thumbnail },
-      caption: infoPayload
+      text: infoPayload
     }, { quoted: msg })
 
-    // 4. Download MP3 Direct - HAKUNA FFMPEG
-    await new Promise((resolve, reject) => {
-      const stream = ytdl(video.url, {
-        filter: 'audioonly',
-        quality: 'lowestaudio', // 128kbps direct
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          }
+    let audioUrl = null
+
+    // 4. API 1 - savetube.me - MP3 DOWNLOAD
+    try {
+      const res1 = await axios.get(`https://www.savetube.me/api/v1/info`, {
+        params: { url: video.url },
+        timeout: 7000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
       })
 
-      const writeStream = fs.createWriteStream(tempFilePath)
-      stream.pipe(writeStream)
-
-      stream.on('error', (err) => {
-        writeStream.close()
-        reject(new Error(`YouTube error: ${err.message}`))
-      })
-
-      writeStream.on('finish', resolve)
-      writeStream.on('error', reject)
-    })
-
-    // 5. Check file size - WhatsApp limit 100MB
-    const stats = fs.statSync(tempFilePath)
-    const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2)
-    if (stats.size > 95 * 1024 * 1024) {
-      fs.unlinkSync(tempFilePath)
-      return await sock.sendMessage(from, {
-        text: `> File too large: ${fileSizeMB}MB\n> WhatsApp limit is 100MB`
-      }, { quoted: msg })
+      if (res1.data?.data?.audio_formats) {
+        const mp3 = res1.data.data.audio_formats.find(f => f.quality === '128kbps' || f.format === 'mp3')
+        audioUrl = mp3?.url || res1.data.data.audio_formats[0]?.url
+      }
+    } catch (e) {
+      console.log('[PLAY] API 1 savetube failed:', e.message)
     }
 
-    // 6. Send audio
+    // 5. API 2 - y2mate - MP3 FALLBACK
+    if (!audioUrl) {
+      try {
+        const res2 = await axios.get(`https://www.y2mate.com/mates/analyzeV2/ajax`, {
+          params: {
+            k_query: video.url,
+            k_page: 'home',
+            q_auto: 0
+          },
+          timeout: 7000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        })
+
+        const mp3Links = res2.data.links?.mp3
+        const mp3_128 = mp3Links?.['128'] || mp3Links?.['mp3128']
+        audioUrl = mp3_128?.url
+      } catch (e) {
+        console.log('[PLAY] API 2 y2mate failed:', e.message)
+      }
+    }
+
+    // 6. API 3 - cobalt.tools - MP3 FALLBACK
+    if (!audioUrl) {
+      try {
+        const res3 = await axios.post('https://co.wuk.sh/api/json', {
+          url: video.url,
+          aFormat: 'mp3',
+          isAudioOnly: true
+        }, {
+          timeout: 7000,
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json'
+          }
+        })
+
+        if (res3.data?.status === 'stream' || res3.data?.status === 'redirect') {
+          audioUrl = res3.data.url
+        }
+      } catch (e) {
+        console.log('[PLAY] API 3 cobalt failed:', e.message)
+      }
+    }
+
+    if (!audioUrl) {
+      throw new Error('Failed to get audio from all sources')
+    }
+
+    // 7. Send audio - STREAM URL DIRECTLY, NO DISK WRITE
     await sock.sendMessage(from, {
-      audio: { url: tempFilePath },
+      audio: { url: audioUrl },
       mimetype: 'audio/mpeg',
       fileName: `${video.title.replace(/[^a-zA-Z0-9 ]/g, '').slice(0, 30)}.mp3`,
       contextInfo: {
@@ -110,35 +141,41 @@ export default async function play(sock, { msg, from, args }, botSettings) {
           body: `${video.author.name} • ${video.timestamp}`,
           thumbnailUrl: video.thumbnail,
           mediaType: 1,
-          renderLargerThumbnail: true,
+          renderLargerThumbnail: false, // ✅ RENDER SAFE
           sourceUrl: video.url
         }
       }
     }, { quoted: msg })
 
+    // 8. Delete processing message and react done ✅
+    if (processingMsg) {
+      await sock.sendMessage(from, { delete: processingMsg.key }).catch(() => {})
+    }
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
-  } catch (commandException) {
-    console.error(`[PLAY ERROR]`, commandException.message)
+  } catch (error) {
+    console.error('[PLAY ERROR]', error.message)
 
-    let errorMsg = '> Audio download failed.'
-    if (commandException.message.includes('Status code: 410')) {
-      errorMsg = '> YouTube blocked this video. Try another song.'
-    } else if (commandException.message.includes('unavailable')) {
-      errorMsg = '> Video is unavailable or age-restricted.'
-    } else if (commandException.message.includes('private')) {
-      errorMsg = '> Video is private.'
-    } else if (commandException.message.includes('Sign in')) {
-      errorMsg = '> YouTube wants login for this video. Try another.'
+    let errorMsg = '> Audio download failed'
+    if (error.message.includes('No results')) {
+      errorMsg = `> No results found for "${args.join(' ')}"`
+    } else if (error.message.includes('too long')) {
+      errorMsg = `> ${error.message}`
+    } else if (error.message.includes('unavailable')) {
+      errorMsg = '> Video is unavailable or age-restricted'
+    } else if (error.message.includes('timeout') || error.code === 'ECONNABORTED') {
+      errorMsg = '> Server timeout. Try again'
+    } else if (error.message.includes('ENOTFOUND')) {
+      errorMsg = '> All APIs down. Try again later'
     }
 
     await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
 
-  } finally {
-    // Cleanup temp file
-    if (fs.existsSync(tempFilePath)) {
-      fs.unlinkSync(tempFilePath)
-      console.log(`[PLAY] Cleaned temp file`)
+    if (processingMsg) {
+      try {
+        await sock.sendMessage(from, { delete: processingMsg.key })
+      } catch {}
     }
   }
 }

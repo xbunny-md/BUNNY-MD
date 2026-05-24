@@ -1,12 +1,12 @@
-// commands/setwelcome.js
-import { supabase } from '../lib/supabase.js'
+// commands/settings/setwelcome.js
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'setwelcome'
 export const alias = ['welcome', 'setwlcm']
-export const category = 'Owner'
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
 export const desc = 'Update welcome message for this group in real-time without restart'
 
-export default async function setwelcome(sock, { msg, from, sender, isGroup }, botSettings) {
+export default async function setwelcome(sock, { msg, from, isGroup }, botSettings) {
   try {
     // 1. GROUP ONLY CHECK
     if (!isGroup) {
@@ -20,12 +20,19 @@ export default async function setwelcome(sock, { msg, from, sender, isGroup }, b
     const args = body.trim().split(' ').slice(1)
     const newWelcome = args.join(' ').trim()
 
-    // 3. Get current welcome - SCHEMA: group_settings.welcome_msg
-    const { data: currentSettings } = await supabase
+    // 3. Get current welcome - FIXED: maybeSingle() instead of single()
+    const { data: currentSettings, error: fetchError } = await supabase
 .from('group_settings')
 .select('welcome_msg')
 .eq('group_jid', from)
-.single()
+.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+
+    if (fetchError) {
+      console.error('Supabase fetch error:', fetchError.message)
+      return await sock.sendMessage(from, {
+        text: '> Failed to fetch current settings. Database error.'
+      }, { quoted: msg })
+    }
 
     const currentWelcome = currentSettings?.welcome_msg || 'Welcome @user to @group!'
 

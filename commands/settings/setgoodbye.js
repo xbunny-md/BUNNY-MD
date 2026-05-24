@@ -1,9 +1,9 @@
-// commands/setgoodbye.js
-import { supabase } from '../lib/supabase.js'
+// commands/settings/setgoodbye.js
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'setgoodbye'
 export const alias = ['goodbye', 'setbye']
-export const category = 'Owner'
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
 export const desc = 'Update goodbye message for this group in real-time without restart'
 
 export default async function setgoodbye(sock, { msg, from, sender, isGroup }, botSettings) {
@@ -20,12 +20,19 @@ export default async function setgoodbye(sock, { msg, from, sender, isGroup }, b
     const args = body.trim().split(' ').slice(1)
     const newGoodbye = args.join(' ').trim()
 
-    // 3. Get current goodbye - SCHEMA: group_settings.goodbye_msg
-    const { data: currentSettings } = await supabase
+    // 3. Get current goodbye - FIXED: maybeSingle() instead of single()
+    const { data: currentSettings, error: fetchError } = await supabase
 .from('group_settings')
 .select('goodbye_msg')
 .eq('group_jid', from)
-.single()
+.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+
+    if (fetchError) {
+      console.error('Supabase fetch error:', fetchError.message)
+      return await sock.sendMessage(from, {
+        text: '> Failed to fetch current settings. Database error.'
+      }, { quoted: msg })
+    }
 
     const currentGoodbye = currentSettings?.goodbye_msg || 'Goodbye @user'
 

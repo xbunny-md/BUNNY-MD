@@ -1,20 +1,14 @@
 // commands/settings/setowner.js
-import { supabase } from '../../lib/supabase.js'
+import { supabase } from '../../../lib/supabase.js' // ✅ Path sahihi kama iko settings/
 
 export const name = 'setowner'
 export const alias = ['sowner', 'newowner']
-export const category = 'Owner'
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
 export const desc = 'Update the bot owner number in real-time without restart'
 
-export default async function setowner(sock, { msg, from, sender }, botSettings) {
+export default async function setowner(sock, { msg, from }, botSettings) {
   try {
-    // 1. OWNER CHECK - BOT NUMBER = OWNER BY FORCE
-    const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net'
-    if (sender!== botNumber) {
-      return await sock.sendMessage(from, { 
-        text: '> Access Denied. Only the bot owner can change settings.' 
-      }, { quoted: msg })
-    }
+    // 1. SHERIA IMEONDOKA ✅ - Hakuna owner check tena
 
     // 2. Get new owner number from args
     const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
@@ -22,14 +16,14 @@ export default async function setowner(sock, { msg, from, sender }, botSettings)
     const newOwner = args.join(' ').trim().replace(/[^0-9]/g, '')
 
     if (!newOwner) {
-      return await sock.sendMessage(from, { 
-        text: `> Usage: ${botSettings.prefix}setowner <number>\n> Example: ${botSettings.prefix}setowner 255780470905\n> Note: Enter number without + or spaces` 
+      return await sock.sendMessage(from, {
+        text: `> Usage: ${botSettings.prefix}setowner <number>\n> Example: ${botSettings.prefix}setowner 255780470905\n> Note: Enter number without + or spaces`
       }, { quoted: msg })
     }
 
     if (newOwner.length < 10 || newOwner.length > 15) {
-      return await sock.sendMessage(from, { 
-        text: `> Invalid number format. Use international format without +\n> Example: 255780470905` 
+      return await sock.sendMessage(from, {
+        text: `> Invalid number format. Use international format without +\n> Example: 255780470905`
       }, { quoted: msg })
     }
 
@@ -38,22 +32,23 @@ export default async function setowner(sock, { msg, from, sender }, botSettings)
 
     // 4. Prevent setting same owner as bot
     if (newOwner === currentBotNumber) {
-      return await sock.sendMessage(from, { 
-        text: `> That number is already the bot owner: ${newOwner}` 
+      return await sock.sendMessage(from, {
+        text: `> That number is already the bot owner: ${newOwner}`
       }, { quoted: msg })
     }
 
     // 5. Update Supabase b_settings table
     const { data, error } = await supabase
-     .from('b_settings')
-     .update({ owner_number: newOwner })
-     .eq('id', 'BUNNY_DEFAULT')
-     .select()
+.from('b_settings')
+.update({ owner_number: newOwner })
+.eq('id', 'BUNNY_DEFAULT')
+.select()
+.maybeSingle() // ✅ Safi hata kama haipo
 
     if (error) {
       console.error('Supabase update error:', error.message)
-      return await sock.sendMessage(from, { 
-        text: '> Failed to update owner number. Database error.' 
+      return await sock.sendMessage(from, {
+        text: '> Failed to update owner number. Database error.'
       }, { quoted: msg })
     }
 
@@ -62,15 +57,15 @@ export default async function setowner(sock, { msg, from, sender }, botSettings)
       react: { text: '🏵️', key: msg.key }
     })
 
-    const successPayload = 
+    const successPayload =
 `╭─⌈ ⚙️ *Settings Updated* ⌋
 │ Owner number changed to: ${newOwner}
 │ Status: Applied instantly
-│ Bot Owner: ${currentBotNumber}
+│ Bot Number: ${currentBotNumber}
 ╰⊷ *${botSettings.botname || 'BUNNY MD'}*`
 
-    await sock.sendMessage(from, { 
-      text: successPayload 
+    await sock.sendMessage(from, {
+      text: successPayload
     }, { quoted: msg })
 
     // 7. Notify new owner
@@ -84,8 +79,8 @@ export default async function setowner(sock, { msg, from, sender }, botSettings)
 
   } catch (commandException) {
     console.error(`[SETOWNER ERROR]`, commandException.message)
-    await sock.sendMessage(from, { 
-      text: '> Failed to update owner number. Check database connection.' 
+    await sock.sendMessage(from, {
+      text: '> Failed to update owner number. Check database connection.'
     }, { quoted: msg })
   }
 }

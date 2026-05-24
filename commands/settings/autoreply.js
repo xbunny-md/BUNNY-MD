@@ -67,7 +67,7 @@ export default async function autotyping(sock, { msg, from, sender, isGroup, isA
 │ ${botSettings.prefix}autotyping scope groups
 │ ${botSettings.prefix}autotyping delay 1000 3000
 │ ${botSettings.prefix}autotyping stats
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
@@ -84,7 +84,7 @@ export default async function autotyping(sock, { msg, from, sender, isGroup, isA
       statsText += `│ Delay Global: ${globalMin}-${globalMax}ms\n`
       statsText += `│ Delay Group: ${groupMin}-${groupMax}ms\n`
       statsText += `│ Total Msgs Processed: ${totalMsgs || 0}\n`
-      statsText += `╰⊷ *Powered By Lupin Starnley*`
+      statsText += `╰⊷ *Powered By Bunny Tech*`
 
       return await sock.sendMessage(from, { text: statsText }, { quoted: msg })
     }
@@ -122,7 +122,7 @@ export default async function autotyping(sock, { msg, from, sender, isGroup, isA
 │ Min Delay: ${minDelay}ms
 │ Max Delay: ${maxDelay}ms
 │ Status: Applied instantly
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
@@ -156,7 +156,7 @@ export default async function autotyping(sock, { msg, from, sender, isGroup, isA
 │ Scope: ${mode.toUpperCase()}
 │ Effect: ${mode === 'all'? 'DM + Groups' : mode === 'groups'? 'Groups Only' : 'DM Only'}
 │ Status: Applied instantly
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
@@ -218,7 +218,7 @@ export default async function autotyping(sock, { msg, from, sender, isGroup, isA
 │ Old Status: ${currentValue? 'ON' : 'OFF'}
 │ Delay: ${targetJid === 'global'? globalMin : groupMin}-${targetJid === 'global'? globalMax : groupMax}ms
 │ Status: Applied instantly
-╰⊷ *Powered By Lupin Starnley*`
+╰⊷ *Powered By Bunny Tech*`
 
     await sock.sendMessage(from, {
       text: successPayload

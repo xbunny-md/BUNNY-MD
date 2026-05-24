@@ -1,9 +1,9 @@
-// commands/antidelete.js
-import { supabase } from '../lib/supabase.js'
+// commands/settings/antidelete.js
+import { supabase } from '../../lib/supabase.js'
 
 export const name = 'antidelete'
 export const alias = ['antidel', 'ad']
-export const category = 'Owner'
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
 export const desc = 'Update antidelete status for this group in real-time without restart'
 
 export default async function antidelete(sock, { msg, from, sender, isGroup }, botSettings) {
@@ -20,12 +20,19 @@ export default async function antidelete(sock, { msg, from, sender, isGroup }, b
     const args = body.trim().split(' ').slice(1)
     const newStatus = args[0]?.toLowerCase()
 
-    // 3. Get current status
-    const { data: currentSettings } = await supabase
-  .from('group_settings')
-  .select('antidelete')
-  .eq('group_jid', from)
-  .single()
+    // 3. Get current status - FIXED: maybeSingle() instead of single()
+    const { data: currentSettings, error: fetchError } = await supabase
+.from('group_settings')
+.select('antidelete')
+.eq('group_jid', from)
+.maybeSingle() // ✅ FIXED: Haitaleta error kama row haipo
+
+    if (fetchError) {
+      console.error('Supabase fetch error:', fetchError.message)
+      return await sock.sendMessage(from, {
+        text: '> Failed to fetch current settings. Database error.'
+      }, { quoted: msg })
+    }
 
     const currentValue = currentSettings?.antidelete || false
 
@@ -51,15 +58,15 @@ export default async function antidelete(sock, { msg, from, sender, isGroup }, b
       }, { quoted: msg })
     }
 
-    // 6. Update Supabase group_settings table
+    // 6. Update Supabase - SCHEMA COLUMNS: group_jid, antidelete, updated_at
     const { data, error } = await supabase
-   .from('group_settings')
-   .upsert({
+.from('group_settings')
+.upsert({
        group_jid: from,
        antidelete: newValue,
        updated_at: new Date().toISOString()
      }, { onConflict: 'group_jid' })
-   .select()
+.select()
 
     if (error) {
       console.error('Supabase update error:', error.message)

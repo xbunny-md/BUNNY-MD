@@ -6,55 +6,54 @@ export const desc = 'Gets profile picture of any number worldwide'
 
 export default async function getpp(sock, { msg, from, args }, botSettings) {
   try {
-    // 1. React first - BUNNY STYLE 🤘
+    // 1. React first
     await sock.sendMessage(from, {
       react: { text: '🤘', key: msg.key }
     })
 
-    // 2. Extract target - 4 super ways
+    // 2. Extract target - 4 ways
     const quoted = msg.message?.extendedTextMessage?.contextInfo
     const mentioned = quoted?.mentionedJid?.[0]
     const replied = quoted?.participant
     const textAfterCmd = args.join(' ').trim()
 
-    let target = null
+    let targetJid = null
 
-    // Way 1: Args - number direct (any country)
+    // Way 1: Args - number direct
     if (textAfterCmd) {
       const cleanNum = textAfterCmd.replace(/[^0-9]/g, '')
-      // Validate: minimum 7 digits, maximum 15 digits (E.164 standard)
       if (cleanNum.length >= 7 && cleanNum.length <= 15) {
-        target = cleanNum + '@s.whatsapp.net'
+        targetJid = cleanNum + '@s.whatsapp.net'
       } else {
         throw new Error('INVALID_NUMBER')
       }
     }
     // Way 2: Mentioned user
     else if (mentioned) {
-      target = mentioned
+      targetJid = mentioned
     }
     // Way 3: Replied user
     else if (replied) {
-      target = replied
+      targetJid = replied
     }
     // Way 4: Sender default
     else {
-      target = msg.key.participant || from
+      targetJid = msg.key.participant || msg.key.remoteJid
     }
 
-    if (!target) throw new Error('NO_TARGET')
+    if (!targetJid) throw new Error('NO_TARGET')
 
-    // 3. Check if number exists on WhatsApp
-    const [result] = await sock.onWhatsApp(target)
+    // 3. FIX: Check if number exists and get NEW JID - solves LID issue
+    const [result] = await sock.onWhatsApp(targetJid)
     if (!result?.exists) throw new Error('NOT_REGISTERED')
 
-    // Use the JID returned by onWhatsApp for accuracy
-    target = result.jid
+    // IMPORTANT: Use the JID returned by onWhatsApp - this is the new/correct one
+    const correctJid = result.jid
 
-    // 4. Get profile picture - no default
+    // 4. Get profile picture using correct JID
     let ppUrl
     try {
-      ppUrl = await sock.profilePictureUrl(target, 'image')
+      ppUrl = await sock.profilePictureUrl(correctJid, 'image')
     } catch (error) {
       if (error.output?.statusCode === 404) throw new Error('NO_PP')
       if (error.output?.statusCode === 403) throw new Error('PP_PRIVACY')
@@ -64,26 +63,29 @@ export default async function getpp(sock, { msg, from, args }, botSettings) {
 
     if (!ppUrl) throw new Error('NO_PP')
 
-    const targetNumber = target.split('@')[0]
+    // Extract number from correct JID
+    const targetNumber = correctJid.split('@')[0]
 
     const ppPayload = 
 `╭─⌈ 🖼️ *PROFILE PICTURE* ⌋
 │ Number: +${targetNumber}
 ╰⊷ *${botSettings.botname || 'BUNNY MD'}*`
 
+    // FIX: Use correct JID for mentions if needed
     await sock.sendMessage(from, { 
       image: { url: ppUrl },
-      caption: ppPayload 
+      caption: ppPayload,
+      mentions: [correctJid]
     }, { quoted: msg })
 
-    // 5. React done ✅
+    // 5. React done
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {
     console.error('[GETPP ERROR]', error.message)
 
     let errorMsg = '> Failed to fetch profile picture'
-    
+
     if (error.message === 'INVALID_NUMBER') {
       errorMsg = '> Invalid number format. Use: countrycode + number\n> Example: 14155552671'
     } else if (error.message === 'NO_TARGET') {

@@ -7,6 +7,7 @@ export const category = 'Downloader'
 export const desc = 'Download Facebook Videos, Reels & Watch in HD'
 
 export default async function facebook(sock, { msg, from, args }, botSettings) {
+  let processingMsg = null
   try {
     // 1. Extract link from args, message text, or quoted message
     const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
@@ -30,17 +31,17 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
       react: { text: '🔗', key: msg.key }
     })
 
-    const processingMsg = await sock.sendMessage(from, {
+    processingMsg = await sock.sendMessage(from, {
       text: `> Processing Facebook link...`
     }, { quoted: msg })
 
     let videoData = null
 
-    // 3. Primary API - SaveFrom Helper
+    // 3. API 1 - SaveFrom Helper - RENDER SAFE
     try {
       const res1 = await axios.get(`https://api.savefrom.net/api/convert`, {
         params: { url: link },
-        timeout: 15000,
+        timeout: 7000, // ✅ RENDER FREE SAFE
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -60,15 +61,15 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
         }
       }
     } catch (e) {
-      console.log('[FB] Primary API failed, trying fallback...')
+      console.log('[FB] API 1 SaveFrom failed:', e.message)
     }
 
-    // 4. Fallback API 1 - GetFVid
+    // 4. API 2 - GetFVid - RENDER SAFE
     if (!videoData) {
       try {
         const res2 = await axios.post('https://www.getfvid.com/downloader',
           `url=${encodeURIComponent(link)}`, {
-          timeout: 15000,
+          timeout: 7000, // ✅ RENDER FREE SAFE
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -89,32 +90,63 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
           }
         }
       } catch (e) {
-        console.log('[FB] Fallback 1 failed, trying fallback 2...')
+        console.log('[FB] API 2 GetFVid failed:', e.message)
       }
     }
 
-    // 5. Fallback API 2 - FBDOWN
+    // 5. API 3 - FBDOWN - ADDED NGUVU
     if (!videoData) {
       try {
-        const res3 = await axios.get(`https://api.fbdown.net/api`, {
+        const res3 = await axios.get(`https://fdown.net/download.php`, {
           params: { url: link },
-          timeout: 15000,
+          timeout: 7000, // ✅ RENDER FREE SAFE
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
         })
 
-        if (res3.data?.hd || res3.data?.sd) {
+        const hdMatch = res3.data.match(/id="hdlink" href="(https:\/\/[^"]+)"/)
+        const sdMatch = res3.data.match(/id="sdlink" href="(https:\/\/[^"]+)"/)
+        const thumbMatch = res3.data.match(/<img src="(https:\/\/[^"]+)"[^>]*alt="thumbnail"/)
+
+        if (hdMatch || sdMatch) {
           videoData = {
-            url: res3.data.hd || res3.data.sd,
-            quality: res3.data.hd? 'HD 720p' : 'SD 360p',
-            title: res3.data.title || 'Facebook Video',
-            thumbnail: res3.data.thumbnail,
-            duration: res3.data.duration || 0
+            url: hdMatch? hdMatch[1] : sdMatch[1],
+            quality: hdMatch? 'HD 720p' : 'SD 360p',
+            title: 'Facebook Video',
+            thumbnail: thumbMatch? thumbMatch[1] : null,
+            duration: 0
           }
         }
       } catch (e) {
-        console.log('[FB] Fallback 2 failed')
+        console.log('[FB] API 3 FDown failed:', e.message)
+      }
+    }
+
+    // 6. API 4 - Snapsave.app - ADDED NGUVU
+    if (!videoData) {
+      try {
+        const res4 = await axios.post('https://snapsave.app/action.php',
+          `url=${encodeURIComponent(link)}`, {
+          timeout: 7000, // ✅ RENDER FREE SAFE
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        })
+
+        const jsonData = JSON.parse(res4.data)
+        if (jsonData?.data?.hd_url || jsonData?.data?.sd_url) {
+          videoData = {
+            url: jsonData.data.hd_url || jsonData.data.sd_url,
+            quality: jsonData.data.hd_url? 'HD 720p' : 'SD 360p',
+            title: jsonData.data.title || 'Facebook Video',
+            thumbnail: jsonData.data.thumbnail,
+            duration: jsonData.data.duration || 0
+          }
+        }
+      } catch (e) {
+        console.log('[FB] API 4 Snapsave failed:', e.message)
       }
     }
 
@@ -122,7 +154,7 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
       throw new Error('Video not found or private')
     }
 
-    // 6. Format duration
+    // 7. Format duration
     const formatDuration = (seconds) => {
       if (!seconds || seconds === 0) return 'Unknown'
       const min = Math.floor(seconds / 60)
@@ -130,7 +162,7 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
       return `${min}:${sec.toString().padStart(2, '0')}`
     }
 
-    // 7. Send info card - BUNNY STYLE
+    // 8. Send info card - NO IMAGE TO SAVE RAM
     const infoPayload = `╭─⌈ 🔗 *${botSettings.botname || 'BUNNY MD'}* ⌋
 │ Title: ${videoData.title.slice(0, 40)}
 │ Quality: ${videoData.quality}
@@ -138,18 +170,11 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
 │ Source: Facebook
 ╰⊷ Downloading...`
 
-    if (videoData.thumbnail) {
-      await sock.sendMessage(from, {
-        image: { url: videoData.thumbnail },
-        caption: infoPayload
-      }, { quoted: msg })
-    } else {
-      await sock.sendMessage(from, {
-        text: infoPayload
-      }, { quoted: msg })
-    }
+    await sock.sendMessage(from, {
+      text: infoPayload
+    }, { quoted: msg })
 
-    // 8. Send video
+    // 9. Send video - STREAM URL DIRECTLY
     await sock.sendMessage(from, {
       video: { url: videoData.url },
       mimetype: 'video/mp4',
@@ -158,16 +183,16 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
         externalAdReply: {
           title: videoData.title.slice(0, 60),
           body: `${botSettings.botname} • FB Downloader`,
-          thumbnailUrl: videoData.thumbnail,
           mediaType: 2,
-          renderLargerThumbnail: true,
           sourceUrl: link
         }
       }
     }, { quoted: msg })
 
-    // 9. Delete processing message and react done ✅
-    await sock.sendMessage(from, { delete: processingMsg.key })
+    // 10. Delete processing message and react done ✅
+    if (processingMsg) {
+      await sock.sendMessage(from, { delete: processingMsg.key }).catch(() => {})
+    }
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {
@@ -176,15 +201,23 @@ export default async function facebook(sock, { msg, from, args }, botSettings) {
     let errorMsg = '> Failed to download Facebook video'
     if (error.message.includes('private')) {
       errorMsg = '> Video is private or unavailable'
-    } else if (error.message.includes('timeout')) {
+    } else if (error.message.includes('timeout') || error.code === 'ECONNABORTED') {
       errorMsg = '> Server timeout. Try again'
     } else if (error.message.includes('not found')) {
       errorMsg = '> Invalid Facebook link or video deleted'
     } else if (error.message.includes('login')) {
       errorMsg = '> Video requires login to view'
+    } else if (error.message.includes('ENOTFOUND')) {
+      errorMsg = '> All APIs down. Try again later'
     }
 
     await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
     await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+
+    if (processingMsg) {
+      try {
+        await sock.sendMessage(from, { delete: processingMsg.key })
+      } catch {}
+    }
   }
 }

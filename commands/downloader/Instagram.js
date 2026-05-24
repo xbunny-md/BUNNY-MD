@@ -7,6 +7,7 @@ export const category = 'Downloader'
 export const desc = 'Download Instagram Reels, Posts, Stories & IGTV in HD'
 
 export default async function instagram(sock, { msg, from, args }, botSettings) {
+  let processingMsg = null
   try {
     // 1. Extract link from args, message text, or quoted message
     const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
@@ -30,17 +31,17 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
       react: { text: '🪎', key: msg.key }
     })
 
-    const processingMsg = await sock.sendMessage(from, {
+    processingMsg = await sock.sendMessage(from, {
       text: `> Processing Instagram link...`
     }, { quoted: msg })
 
     let mediaData = null
 
-    // 3. Primary API - SaveIG
+    // 3. Primary API - SaveIG - TIMEOUT REDUCED FOR RENDER
     try {
       const res1 = await axios.get(`https://api.saveig.app/api/download`, {
         params: { url: link },
-        timeout: 15000,
+        timeout: 8000, // ✅ REDUCED: Render free inakata connection
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
@@ -50,21 +51,21 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
         const media = res1.data.data[0]
         mediaData = {
           url: media.url,
-          type: media.type, // video or image
+          type: media.type,
           thumbnail: media.thumbnail,
           title: res1.data.caption || 'Instagram Media'
         }
       }
     } catch (e) {
-      console.log('[IG] Primary API failed, trying fallback...')
+      console.log('[IG] Primary API failed:', e.message)
     }
 
-    // 4. Fallback API 1 - SnapInsta
+    // 4. Fallback API 1 - SnapInsta - RENDER SAFE
     if (!mediaData) {
       try {
         const res2 = await axios.post('https://snapinsta.app/api/ajaxSearch',
           `q=${encodeURIComponent(link)}`, {
-          timeout: 15000,
+          timeout: 8000, // ✅ REDUCED
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -93,16 +94,16 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
           }
         }
       } catch (e) {
-        console.log('[IG] Fallback 1 failed, trying fallback 2...')
+        console.log('[IG] Fallback 1 failed:', e.message)
       }
     }
 
-    // 5. Fallback API 2 - InstaDL
+    // 5. Fallback API 2 - InstaDL - RENDER SAFE
     if (!mediaData) {
       try {
         const res3 = await axios.get(`https://api.instadl.app/api/v1/media`, {
           params: { url: link },
-          timeout: 15000,
+          timeout: 8000, // ✅ REDUCED
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
           }
@@ -118,7 +119,7 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
           }
         }
       } catch (e) {
-        console.log('[IG] Fallback 2 failed')
+        console.log('[IG] Fallback 2 failed:', e.message)
       }
     }
 
@@ -126,27 +127,19 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
       throw new Error('Media not found or private account')
     }
 
-    // 6. Send info card - BUNNY STYLE
+    // 6. Send info card - NO THUMBNAIL TO SAVE RAM
     const mediaType = mediaData.type === 'video'? 'Reel/Video' : 'Post/Image'
     const infoPayload = `╭─⌈ 🎬 *${botSettings.botname || 'BUNNY MD'}* ⌋
 │ Type: ${mediaType}
-│ Caption: ${mediaData.title.slice(0, 50)}
 │ Quality: HD Original
 │ Source: Instagram
 ╰⊷ Downloading...`
 
-    if (mediaData.thumbnail) {
-      await sock.sendMessage(from, {
-        image: { url: mediaData.thumbnail },
-        caption: infoPayload
-      }, { quoted: msg })
-    } else {
-      await sock.sendMessage(from, {
-        text: infoPayload
-      }, { quoted: msg })
-    }
+    await sock.sendMessage(from, {
+      text: infoPayload
+    }, { quoted: msg })
 
-    // 7. Send media - Video or Image
+    // 7. Send media - STREAM URL DIRECTLY, NO BUFFER DOWNLOAD
     if (mediaData.type === 'video') {
       await sock.sendMessage(from, {
         video: { url: mediaData.url },
@@ -156,9 +149,7 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
           externalAdReply: {
             title: 'Instagram Download',
             body: `${botSettings.botname} • IG Downloader`,
-            thumbnailUrl: mediaData.thumbnail,
             mediaType: 2,
-            renderLargerThumbnail: true,
             sourceUrl: link
           }
         }
@@ -171,9 +162,7 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
           externalAdReply: {
             title: 'Instagram Download',
             body: `${botSettings.botname} • IG Downloader`,
-            thumbnailUrl: mediaData.url,
             mediaType: 1,
-            renderLargerThumbnail: true,
             sourceUrl: link
           }
         }
@@ -181,7 +170,9 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
     }
 
     // 8. Delete processing message and react done ✅
-    await sock.sendMessage(from, { delete: processingMsg.key })
+    if (processingMsg) {
+      await sock.sendMessage(from, { delete: processingMsg.key })
+    }
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {
@@ -190,13 +181,22 @@ export default async function instagram(sock, { msg, from, args }, botSettings) 
     let errorMsg = '> Failed to download Instagram media'
     if (error.message.includes('private')) {
       errorMsg = '> Account is private or media unavailable'
-    } else if (error.message.includes('timeout')) {
+    } else if (error.message.includes('timeout') || error.code === 'ECONNABORTED') {
       errorMsg = '> Server timeout. Try again'
     } else if (error.message.includes('not found')) {
       errorMsg = '> Invalid Instagram link or post deleted'
+    } else if (error.message.includes('ENOTFOUND')) {
+      errorMsg = '> Network error. API is down'
     }
 
     await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
     await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+
+    // Cleanup processing message on error
+    if (processingMsg) {
+      try {
+        await sock.sendMessage(from, { delete: processingMsg.key })
+      } catch {}
+    }
   }
 }

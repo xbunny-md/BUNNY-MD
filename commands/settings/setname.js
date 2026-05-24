@@ -1,26 +1,20 @@
 // commands/settings/setbotname.js
-import { supabase } from '../../lib/supabase.js'
+import { supabase } from '../../../lib/supabase.js' // ✅ Path sahihi kama iko settings/
 
 export const name = 'setbotname'
 export const alias = ['setname', 'botname']
-export const category = 'Owner'
+export const category = 'Settings' // ✅ FIXED: Settings sio Owner
 export const desc = 'Update the bot name in real-time without restart'
 
-export default async function setbotname(sock, { msg, from, sender, args }, botSettings) {
+export default async function setbotname(sock, { msg, from, args }, botSettings) {
   try {
-    // 1. OWNER CHECK - BOT NUMBER = OWNER BY FORCE
-    const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net'
-    if (sender!== botNumber) {
-      return await sock.sendMessage(from, { 
-        text: '> Access Denied. Only the bot owner can change settings.' 
-      }, { quoted: msg })
-    }
+    // 1. SHERIA IMEONDOKA ✅ - Hakuna owner check tena
 
     // 2. Get new name
     const newName = args.join(' ').trim()
     if (!newName) {
       return await sock.sendMessage(from, { 
-        text: `> Usage: ${botSettings.prefix}setbotname <new_name>\n> Example: ${botSettings.prefix}setbotname BUNNY PRO` 
+        text: `> Usage: ${botSettings.prefix}setbotname <new_name>\n> Example: ${botSettings.prefix}setbotname BUNNY PRO\n> Current: ${botSettings.botname}` 
       }, { quoted: msg })
     }
 
@@ -39,10 +33,11 @@ export default async function setbotname(sock, { msg, from, sender, args }, botS
 
     // 4. Update Supabase b_settings table
     const { data, error } = await supabase
-    .from('b_settings')
-    .update({ botname: newName })
-    .eq('id', 'BUNNY_DEFAULT')
-    .select()
+.from('b_settings')
+.update({ botname: newName })
+.eq('id', 'BUNNY_DEFAULT')
+.select()
+.maybeSingle() // ✅ Safi hata kama haipo
 
     if (error) {
       console.error('Supabase update error:', error.message)

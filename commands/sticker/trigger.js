@@ -9,7 +9,7 @@ export const alias = ['triggered', 'trig']
 export const category = 'Sticker'
 export const desc = 'Triggered meme effect sticker'
 
-// API LIST - 8 TOTAL 🦁
+// API LIST - 15 TOTAL FOR MAXIMUM UPTIME 🦁
 const TRIGGER_APIS = [
   (url) => `https://api.popcat.xyz/triggered?image=${encodeURIComponent(url)}`,
   (url) => `https://some-random-api.com/canvas/triggered?avatar=${encodeURIComponent(url)}`,
@@ -18,7 +18,14 @@ const TRIGGER_APIS = [
   (url) => `https://api.lolhuman.xyz/api/editor/triggered?apikey=GataDios&img=${encodeURIComponent(url)}`,
   (url) => `https://api.ryzendesu.vip/api/maker/triggered?url=${encodeURIComponent(url)}`,
   (url) => `https://api.zeeoneofc.my.id/api/triggered?url=${encodeURIComponent(url)}`,
-  (url) => `https://api.botcahx.eu.org/api/maker/triggered?url=${encodeURIComponent(url)}`
+  (url) => `https://api.botcahx.eu.org/api/maker/triggered?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.caliph.my.id/api/triggered?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.xteam.xyz/triggered?url=${encodeURIComponent(url)}&apikey=YOURKEY`,
+  (url) => `https://api-fgmods.ddns.net/api/maker/triggered?url=${encodeURIComponent(url)}`,
+  (url) => `https://api-fgmods.ddns.net/api/canvas/triggered?url=${encodeURIComponent(url)}`,
+  (url) => `https://skizo.tech/api/triggered?apikey=YOURKEY&url=${encodeURIComponent(url)}`,
+  (url) => `https://api.vreden.my.id/api/maker/triggered?url=${encodeURIComponent(url)}`,
+  (url) => `https://api.siputzx.my.id/api/m/triggered?url=${encodeURIComponent(url)}`
 ]
 
 async function fetchTriggerBuffer(imageUrl) {
@@ -30,13 +37,13 @@ async function fetchTriggerBuffer(imageUrl) {
         timeout: 10000,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       })
-      
-      if (res.data && res.status === 200) {
-        console.log(` Trigger Success API ${i + 1}`)
+
+      if (res.data && res.status === 200 && res.data.byteLength > 1000) {
+        console.log(`Trigger API ${i + 1} success`)
         return Buffer.from(res.data)
       }
     } catch (err) {
-      console.log(` Trigger API ${i + 1} failed: ${err.message}`)
+      console.log(`Trigger API ${i + 1} failed: ${err.message}`)
       continue
     }
   }
@@ -44,36 +51,45 @@ async function fetchTriggerBuffer(imageUrl) {
 }
 
 export default async function trigger(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
   try {
-    // 1. Get quoted message or sender
-    const quoted = msg.message?.extendedTextMessage?.contextInfo
-    let targetMsg = msg
+    // 1. ADVANCED EYE LOGIC - captures everything
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const mediaMessage = msg.message?.imageMessage || 
+                         msg.message?.stickerMessage ||
+                         quoted?.imageMessage || 
+                         quoted?.stickerMessage ||
+                         quoted?.viewOnceMessageV2?.message?.imageMessage ||
+                         quoted?.viewOnceMessageV2?.message?.stickerMessage ||
+                         quoted?.viewOnceMessage?.message?.imageMessage ||
+                         quoted?.viewOnceMessage?.message?.stickerMessage
+
     let targetJid = msg.key.participant || msg.key.remoteJid
-    
-    if (quoted?.quotedMessage) {
+    let targetMsg = msg
+
+    // 2. SET TARGET IF QUOTED EXISTS
+    if (quoted && (quoted.imageMessage || quoted.stickerMessage || quoted.viewOnceMessageV2 || quoted.viewOnceMessage)) {
+      const quotedInfo = msg.message?.extendedTextMessage?.contextInfo
       targetMsg = { 
-        message: quoted.quotedMessage, 
+        message: quoted, 
         key: { 
           remoteJid: from, 
-          id: quoted.stanzaId, 
-          participant: quoted.participant 
+          id: quotedInfo.stanzaId, 
+          participant: quotedInfo.participant 
         } 
       }
-      targetJid = quoted.participant || quoted.remoteJid
+      targetJid = quotedInfo.participant || quotedInfo.remoteJid || from
     }
 
-    // 2. Check if image/sticker
-    const isImage = targetMsg.message?.imageMessage
-    const isSticker = targetMsg.message?.stickerMessage
-
-    // 3. React processing
+    // 3. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 4. Download media
+    // 4. DOWNLOAD MEDIA OR GET PROFILE PIC
     let buffer
-    if (isImage || isSticker) {
+    if (mediaMessage) {
       buffer = await downloadMediaMessage(
         targetMsg,
         'buffer',
@@ -81,10 +97,9 @@ export default async function trigger(sock, { msg, from }, botSettings) {
         { logger: console }
       )
     } else {
-      // Get profile pic kama hakuna image
       try {
         const ppUrl = await sock.profilePictureUrl(targetJid, 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 8000 })
         buffer = Buffer.from(res.data)
       } catch {
         const res = await axios.get('https://i.ibb.co/2dH8p5Z/profile.jpg', { responseType: 'arraybuffer' })
@@ -92,44 +107,52 @@ export default async function trigger(sock, { msg, from }, botSettings) {
       }
     }
 
-    if (!buffer) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
+    if (!buffer || buffer.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ❌ *Error* ⌋
+│ Failed to get image
+│ Reply to an image/sticker or tag someone
+│ Usage: ${prefix}trigger
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
-    // 5. Upload to get URL
+    // 5. UPLOAD TO GET URL - TECHNICAL DEPENDENCY FOR STABILITY
     const imageUrl = await upload(buffer)
 
-    // 6. Get triggered gif
+    // 6. GET TRIGGERED GIF FROM API - 15 FALLBACKS
     const triggerBuffer = await fetchTriggerBuffer(imageUrl)
 
-    // 7. Convert to sticker
+    // 7. CONVERT TO STICKER - RENDER SAFE
     const sticker = new Sticker(triggerBuffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['😡', '🔥'],
+      quality: 70
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 8. Send sticker
+    // 8. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 9. React done
+    // 9. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[TRIGGER ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
+      text: `╭─⌈ ❌ *Trigger Failed* ⌋
+│ ${error.message.includes('API') ? 'All 15 APIs are down' : 'Processing failed'}
+│ Try again later
+╰⊷ *Powered By Bunny Tech*`
+    }, { quoted: msg })
   }
 }

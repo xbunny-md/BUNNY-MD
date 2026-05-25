@@ -1,7 +1,7 @@
 // commands/info/ppblock.js
 export const name = 'ppblock'
 export const alias = ['isblocked', 'didblockme', 'blockcheck', 'checkblock']
-export const category = 'Info'
+export const category = 'Profile'
 export const desc = 'Checks block status - supports multiple users, privacy check, last seen check'
 
 export default async function ppblock(sock, { msg, from, args }, botSettings) {

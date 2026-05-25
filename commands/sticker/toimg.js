@@ -1,42 +1,34 @@
 // commands/sticker/toimg.js
 import { downloadMediaMessage } from '@whiskeysockets/baileys'
-import { webp2png } from '../lib/converter.js'
 
 export const name = 'toimg'
-export const alias = ['toimage', 'topng']
+export const alias = ['toimage', 'topng', 'picha']
 export const category = 'Sticker'
 export const desc = 'Convert sticker to image'
 
-export default async function toimg(sock, { msg, from }, botSettings) {
+export default async function toimg(sock, { msg, from }) {
   try {
-    // 1. Get quoted message
+    // 1. Get quoted or direct sticker message
     const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
-    
-    if (!quoted) {
+    const stickerMessage = msg.message?.stickerMessage || quoted?.stickerMessage
+
+    if (!stickerMessage) {
       await sock.sendMessage(from, {
         react: { text: '❌', key: msg.key }
       })
-      return
+      return await sock.sendMessage(from, { 
+        text: 'Reply to a sticker to convert it to an image.' 
+      }, { quoted: msg })
     }
 
-    // 2. Check if sticker
-    const isSticker = quoted.stickerMessage
-    
-    if (!isSticker) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
-    }
-
-    // 3. React processing
+    // 2. React processing
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 4. Download sticker
+    // 3. Download sticker buffer directly
     const buffer = await downloadMediaMessage(
-      { message: { message: quoted } },
+      { message: { stickerMessage } },
       'buffer',
       {},
       { logger: console }
@@ -46,20 +38,19 @@ export default async function toimg(sock, { msg, from }, botSettings) {
       await sock.sendMessage(from, {
         react: { text: '❌', key: msg.key }
       })
-      return
+      return await sock.sendMessage(from, { 
+        text: 'Failed to download sticker.' 
+      }, { quoted: msg })
     }
 
-    // 5. Convert webp to png
-    const imageBuffer = await webp2png(buffer)
-
-    // 6. Send as image
+    // 4. Send as image - WhatsApp handles webp automatically
     await sock.sendMessage(from, {
-      image: imageBuffer,
+      image: buffer,
       caption: `╭─⌈ 🖼️ *STICKER TO IMAGE* ⌋
 ╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
 
-    // 7. React done
+    // 5. React done
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
@@ -69,5 +60,8 @@ export default async function toimg(sock, { msg, from }, botSettings) {
     await sock.sendMessage(from, {
       react: { text: '❌', key: msg.key }
     })
+    await sock.sendMessage(from, { 
+      text: `Error: ${error.message}` 
+    }, { quoted: msg })
   }
 }

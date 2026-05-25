@@ -5,7 +5,7 @@ import axios from 'axios'
 export const name = 'stickerdl'
 export const alias = ['dlpack', 'getpack', 'stickerpackdl', 'spack']
 export const category = 'Sticker'
-export const desc = 'Download full sticker pack + rebrand to BUNNY-MD - 15+ API fallback'
+export const desc = 'Download full sticker pack + rebrand to BUNNY-MD - 16+ API fallback'
 
 // API LIST - 16 TOTAL 🦁
 const PACK_APIS = [
@@ -31,29 +31,29 @@ async function fetchPackStickers(packUrl) {
   for (let i = 0; i < PACK_APIS.length; i++) {
     try {
       const url = PACK_APIS[i](packUrl)
-      const res = await axios.get(url, { 
+      const res = await axios.get(url, {
         timeout: 20000,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       })
-      
+
       let results = []
       if (res.data?.result) results = res.data.result
       else if (res.data?.data) results = res.data.data
       else if (res.data?.stickers) results = res.data.stickers
       else if (Array.isArray(res.data)) results = res.data
-      
+
       // Extract URLs
       results = results.map(item => {
         if (typeof item === 'string') return item
         return item.url || item.link || item.file || item.image
       }).filter(Boolean)
-      
+
       if (results.length > 0) {
-        console.log(` Pack Download Success API ${i + 1} - Found ${results.length} stickers`)
-        return results
+        console.log(`Pack Download Success API ${i + 1} - Found ${results.length} stickers`)
+        return results.slice(0, 20) // LIMIT 20 - RAM SAFE
       }
     } catch (err) {
-      console.log(` Pack API ${i + 1} failed: ${err.message}`)
+      console.log(`Pack API ${i + 1} failed: ${err.message}`)
       continue
     }
   }
@@ -61,119 +61,166 @@ async function fetchPackStickers(packUrl) {
 }
 
 export default async function stickerdl(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
   try {
-    // 1. Get pack URL
+    // 1. GET PACK URL
     const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
     const args = body.trim().split(' ').slice(1)
-    
+
+    // 2. HELP IF NO URL
     if (!args[0]) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
+      await sock.sendMessage(from, { react: { text: '📦', key: msg.key } })
       return await sock.sendMessage(from, {
-        text: `> ❌ Please provide sticker pack URL!\n> Usage: ${botSettings.prefix}stickerdl https://t.me/addstickers/packname\n> Example: ${botSettings.prefix}dlpack https://getstickerpack.com/stickers/pack\n> All stickers will be rebranded to BUNNY-MD`
+        text: `╭─⌈ 📦 *Sticker Pack Downloader* ⌋
+│ Download full pack + rebrand BUNNY-MD
+│
+│ *Usage:*
+│ ${prefix}stickerdl <url>
+│ ${prefix}dlpack https://t.me/addstickers/pack
+│
+│ *Supported:*
+│ • Telegram: t.me/addstickers/...
+│ • GetStickerPack: getstickerpack.com/...
+│ • Sticker.ly: sticker.ly/...
+│
+│ *Limit:* Max 20 stickers per pack
+│ *Note:* All rebranded to BUNNY-MD
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
     const packUrl = args[0]
-    
-    // Validate URL
-    if (!packUrl.includes('t.me/addstickers') &&!packUrl.includes('getstickerpack.com') &&!packUrl.includes('sticker.ly')) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
+
+    // 3. VALIDATE URL
+    const validHosts = ['t.me/addstickers', 'getstickerpack.com', 'sticker.ly']
+    const isValid = validHosts.some(host => packUrl.includes(host))
+
+    if (!isValid) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
       return await sock.sendMessage(from, {
-        text: `> ❌ Invalid pack URL!\n> Supports: Telegram, GetStickerPack, Sticker.ly\n> Example: ${botSettings.prefix}stickerdl https://t.me/addstickers/AnimePack`
+        text: `╭─⌈ ❌ *Invalid URL* ⌋
+│ Supports only:
+│ • t.me/addstickers/...
+│ • getstickerpack.com/...
+│ • sticker.ly/...
+│
+│ Example:
+│ ${prefix}stickerdl https://t.me/addstickers/AnimePack
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
-    // 2. React processing
+    // 4. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
     await sock.sendMessage(from, {
-      text: `> ⏳ Downloading pack...\n> All stickers will be made by Lupin Starnley BUNNY-MD 🦁`
+      text: `╭─⌈ ⏳ *Downloading Pack* ⌋
+│ Fetching stickers...
+│ Will rebrand to BUNNY-MD
+╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
 
-    // 3. Fetch pack stickers
+    // 5. FETCH PACK STICKERS
     const stickerUrls = await fetchPackStickers(packUrl)
-    
+
     if (!stickerUrls || stickerUrls.length === 0) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
       return await sock.sendMessage(from, {
-        text: `> ❌ Failed to get stickers from pack\n> Link might be invalid or private\n> Try: ${botSettings.prefix}stickerdl https://t.me/addstickers/PublicPack`
+        text: `╭─⌈ ❌ *No Stickers Found* ⌋
+│ Link might be invalid or private
+│ Try public pack:
+│ ${prefix}stickerdl https://t.me/addstickers/PublicPack
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
-    // 4. Send count
+    // 6. SEND COUNT
     await sock.sendMessage(from, {
-      text: `> ✅ Found ${stickerUrls.length} stickers\n> Rebranding to BUNNY-MD + sending...`
+      text: `╭─⌈ ✅ *Found ${stickerUrls.length} Stickers* ⌋
+│ Rebranding to BUNNY-MD...
+│ Sending now...
+╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
 
-    // 5. Download, rebrand and send each sticker
+    // 7. DOWNLOAD, REBRAND AND SEND - RAM SAFE + RATE LIMIT
     let sent = 0
     for (let i = 0; i < stickerUrls.length; i++) {
       try {
         const res = await axios.get(stickerUrls[i], {
           responseType: 'arraybuffer',
           timeout: 15000,
+          maxContentLength: 5 * 1024 * 1024, // 5MB limit - RAM SAFE
           headers: { 'User-Agent': 'Mozilla/5.0' }
         })
-        
+
         const buffer = Buffer.from(res.data)
+
+        if (buffer.length > 1024 * 1024) {
+          console.log(`Sticker too large: ${(buffer.length / 1024 / 1024).toFixed(2)}MB`)
+          continue
+        }
 
         // Rebrand to BUNNY-MD
         const sticker = new Sticker(buffer, {
           pack: 'BUNNY-MD',
           author: 'Lupin Starnley',
           type: StickerTypes.FULL,
-          categories: ['🤖'],
-          quality: 50
+          categories: ['📦', '✨'],
+          quality: 70,
+          id: Date.now().toString()
         })
 
         const stickerBuffer = await sticker.toBuffer()
-        
+
         await sock.sendMessage(from, {
           sticker: stickerBuffer
         })
-        
+
         sent++
-        
-        // Delay 1.5s to avoid rate limit
-        await new Promise(resolve => setTimeout(resolve, 1500))
-        
-        // Progress update every 10 stickers
-        if (sent % 10 === 0) {
+
+        // Rate limit: 2s delay to avoid spam ban
+        await new Promise(resolve => setTimeout(resolve, 2000))
+
+        // Progress update every 5 stickers
+        if (sent % 5 === 0 && sent < stickerUrls.length) {
           await sock.sendMessage(from, {
-            text: `> 📦 Progress: ${sent}/${stickerUrls.length} stickers sent`
-          }, { quoted: msg })
+            text: `╭─⌈ 📦 *Progress* ⌋
+│ ${sent}/${stickerUrls.length} stickers sent
+╰⊷ *Powered By Bunny Tech*`
+          })
         }
-        
+
       } catch (err) {
-        console.log(` Failed sticker ${i + 1}: ${err.message}`)
+        console.log(`Failed sticker ${i + 1}: ${err.message}`)
         continue
       }
     }
 
-    // 6. React done
+    // 8. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
     await sock.sendMessage(from, {
-      text: `> ✅ Pack Download Complete!\n> Sent: ${sent}/${stickerUrls.length} stickers\n> Pack: BUNNY-MD\n> Author: Lupin Starnley 🦁`
+      text: `╭─⌈ ✅ *Pack Complete* ⌋
+│ Sent: ${sent}/${stickerUrls.length} stickers
+│ Pack: BUNNY-MD
+│ Author: Lupin Starnley 🦁
+╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
 
   } catch (error) {
     console.error('[STICKERDL ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
-    await sock.sendMessage(from, {
-      text: `> ❌ Failed to download pack\n> Usage: ${botSettings.prefix}stickerdl https://t.me/addstickers/packname\n> Make sure link is public`
+      text: `╭─⌈ ❌ *Download Failed* ⌋
+│ ${error.message.includes('API')? 'All 16 APIs are down' : 'Processing failed'}
+│ Usage: ${prefix}stickerdl <url>
+│ Example: ${prefix}stickerdl https://t.me/addstickers/pack
+╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
   }
 }

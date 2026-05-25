@@ -1,5 +1,5 @@
 // commands/sticker/mix.js
-import { downloadMediaMessage } from '@whiskeysockets/baileys'
+import { downloadMediaMessage, getContentType, jidNormalizedUser } from '@whiskeysockets/baileys'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import axios from 'axios'
 import { upload } from '../../lib/upload.js'
@@ -8,7 +8,7 @@ import sharp from 'sharp'
 export const name = 'mix'
 export const alias = ['stickermix', 'combine', 'merge']
 export const category = 'Sticker'
-export const desc = 'Changanya stickers/picha 2 ziwe sticker 1 - 15+ API fallback'
+export const desc = 'Combine 2 stickers/images into 1 sticker - Upload first, Sharp fallback'
 
 // API LIST - 16 TOTAL 🦁
 const MIX_APIS = [
@@ -30,33 +30,11 @@ const MIX_APIS = [
   (url1, url2) => `https://api.dhamzxploit.my.id/api/canvas/ship?url1=${encodeURIComponent(url1)}&url2=${encodeURIComponent(url2)}`
 ]
 
-async function fetchMixBuffer(url1, url2) {
-  for (let i = 0; i < MIX_APIS.length; i++) {
-    try {
-      const url = MIX_APIS[i](url1, url2)
-      const res = await axios.get(url, { 
-        responseType: 'arraybuffer',
-        timeout: 10000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      })
-      
-      if (res.data && res.status === 200) {
-        console.log(` Mix Success API ${i + 1}`)
-        return Buffer.from(res.data)
-      }
-    } catch (err) {
-      console.log(` Mix API ${i + 1} failed: ${err.message}`)
-      continue
-    }
-  }
-  throw new Error('All Mix APIs failed')
-}
-
-// Fallback local mix using sharp
+// SHARP LOCAL FALLBACK - RAM SAFE 🦁
 async function localMix(buffer1, buffer2) {
-  const img1 = await sharp(buffer1).resize(256, 256).toBuffer()
-  const img2 = await sharp(buffer2).resize(256, 256).toBuffer()
-  
+  const img1 = await sharp(buffer1).resize(256, 256, { fit: 'cover' }).png().toBuffer()
+  const img2 = await sharp(buffer2).resize(256, 256, { fit: 'cover' }).png().toBuffer()
+
   return await sharp({
     create: {
       width: 512,
@@ -65,126 +43,182 @@ async function localMix(buffer1, buffer2) {
       background: { r: 0, g: 0, b: 0, alpha: 0 }
     }
   })
- .composite([
+  .composite([
     { input: img1, left: 0, top: 0 },
     { input: img2, left: 256, top: 0 }
   ])
- .png()
- .toBuffer()
+  .png({ quality: 80, compressionLevel: 9 })
+  .toBuffer()
 }
 
-export default async function mix(sock, { msg, from }, botSettings) {
+// FETCH: UPLOAD + API FIRST, SHARP FALLBACK
+async function fetchMixBuffer(buffer1, buffer2) {
+  // 1. TRY UPLOAD + APIs FIRST
   try {
-    // 1. Get quoted messages - need 2 images
-    const quoted = msg.message?.extendedTextMessage?.contextInfo
-    const mentions = quoted?.mentionedJid || []
-    
-    let buffer1, buffer2
-    
-    // Case 1: Reply 2 messages - need to check quoted
-    if (quoted?.quotedMessage) {
-      const quotedMsg = {
-        message: quoted.quotedMessage,
-        key: { 
-          remoteJid: from, 
-          id: quoted.stanzaId, 
-          participant: quoted.participant 
-        }
-      }
-      
-      if (quotedMsg.message?.imageMessage || quotedMsg.message?.stickerMessage) {
-        buffer1 = await downloadMediaMessage(quotedMsg, 'buffer', {}, { logger: console })
-      }
-    }
-    
-    // Case 2: Current message has image + quoted has image
-    if (msg.message?.imageMessage || msg.message?.stickerMessage) {
-      buffer2 = await downloadMediaMessage(msg, 'buffer', {}, { logger: console })
-    }
-    
-    // Case 3: Use tagged users profile pics
-    if (!buffer1 && mentions[0]) {
-      try {
-        const ppUrl = await sock.profilePictureUrl(mentions[0], 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
-        buffer1 = Buffer.from(res.data)
-      } catch {}
-    }
-    
-    if (!buffer2 && mentions[1]) {
-      try {
-        const ppUrl = await sock.profilePictureUrl(mentions[1], 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
-        buffer2 = Buffer.from(res.data)
-      } catch {}
-    }
-    
-    // Case 4: Use sender if still missing
-    if (!buffer1) {
-      try {
-        const ppUrl = await sock.profilePictureUrl(msg.key.participant || from, 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
-        buffer1 = Buffer.from(res.data)
-      } catch {}
-    }
-
-    // 3. React processing
-    await sock.sendMessage(from, {
-      react: { text: '⏳', key: msg.key }
-    })
-
-    if (!buffer1 ||!buffer2) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return await sock.sendMessage(from, { 
-        text: `> ❌ Need 2 images/stickers!\n> Usage:.mix\n> Reply picha 1, tag mtu au tuma picha 2\n> Example:.mix @user1 @user2` 
-      }, { quoted: msg })
-    }
-
-    // 5. Upload both images
+    console.log('Trying upload + APIs')
     const [url1, url2] = await Promise.all([
       upload(buffer1),
       upload(buffer2)
     ])
+    
+    for (let i = 0; i < MIX_APIS.length; i++) {
+      try {
+        const url = MIX_APIS[i](url1, url2)
+        const res = await axios.get(url, { 
+          responseType: 'arraybuffer',
+          timeout: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        })
 
-    // 6. Try API mix first, fallback to local
-    let mixBuffer
-    try {
-      mixBuffer = await fetchMixBuffer(url1, url2)
-    } catch {
-      console.log(' APIs failed, using local mix')
-      mixBuffer = await localMix(buffer1, buffer2)
+        if (res.data && res.status === 200 && res.data.byteLength > 1000) {
+          console.log(`Mix API ${i + 1} success`)
+          return Buffer.from(res.data)
+        }
+      } catch (err) {
+        console.log(`Mix API ${i + 1} failed: ${err.message}`)
+        continue
+      }
+    }
+  } catch (err) {
+    console.log(`Upload/APIs failed: ${err.message}`)
+  }
+
+  // 2. FALLBACK TO LOCAL SHARP
+  console.log('Falling back to local Sharp')
+  return await localMix(buffer1, buffer2)
+}
+
+// MODERN JID NORMALIZER - HANDLES LID/JID 🦁
+function normalizeJid(jid) {
+  if (!jid) return null
+  return jidNormalizedUser(jid)
+}
+
+export default async function mix(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
+  try {
+    // 1. REACT PROCESSING
+    await sock.sendMessage(from, {
+      react: { text: '⏳', key: msg.key }
+    })
+
+    // 2. COLLECT MEDIA SOURCES - MODERN DETECTION
+    const context = msg.message?.extendedTextMessage?.contextInfo
+    const mentions = context?.mentionedJid || []
+    const quoted = context?.quotedMessage
+    
+    let mediaBuffers = []
+
+    // Helper to get buffer from message
+    const getBuffer = async (message, jid) => {
+      try {
+        if (message?.imageMessage || message?.stickerMessage) {
+          const targetMsg = { message, key: { remoteJid: from, id: msg.key.id } }
+          return await downloadMediaMessage(targetMsg, 'buffer', {}, { logger: console })
+        } else if (message?.viewOnceMessageV2?.message?.imageMessage) {
+          const targetMsg = { message: message.viewOnceMessageV2.message, key: { remoteJid: from, id: msg.key.id } }
+          return await downloadMediaMessage(targetMsg, 'buffer', {}, { logger: console })
+        } else if (message?.viewOnceMessage?.message?.imageMessage) {
+          const targetMsg = { message: message.viewOnceMessage.message, key: { remoteJid: from, id: msg.key.id } }
+          return await downloadMediaMessage(targetMsg, 'buffer', {}, { logger: console })
+        } else if (jid) {
+          const ppUrl = await sock.profilePictureUrl(normalizeJid(jid), 'image')
+          const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 8000 })
+          return Buffer.from(res.data)
+        }
+      } catch {
+        return null
+      }
     }
 
-    // 7. Convert to sticker
+    // Source 1: Current message
+    const buf1 = await getBuffer(msg.message, null)
+    if (buf1) mediaBuffers.push(buf1)
+
+    // Source 2: Quoted message
+    if (quoted && mediaBuffers.length < 2) {
+      const buf2 = await getBuffer(quoted, context?.participant)
+      if (buf2) mediaBuffers.push(buf2)
+    }
+
+    // Source 3: Mentions - MODERN JID HANDLING
+    for (const jid of mentions) {
+      if (mediaBuffers.length >= 2) break
+      const normalizedJid = normalizeJid(jid)
+      if (!normalizedJid) continue
+      
+      try {
+        const ppUrl = await sock.profilePictureUrl(normalizedJid, 'image')
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 8000 })
+        mediaBuffers.push(Buffer.from(res.data))
+      } catch (err) {
+        console.log(`PP fetch failed for ${normalizedJid}: ${err.message}`)
+      }
+    }
+
+    // Source 4: Sender as fallback
+    if (mediaBuffers.length < 2) {
+      const bufSelf = await getBuffer(null, msg.key.participant || from)
+      if (bufSelf) mediaBuffers.push(bufSelf)
+    }
+
+    // 3. VALIDATE - NEED 2 IMAGES
+    if (mediaBuffers.length < 2) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ 📸 *Sticker Mix* ⌋
+│ Need 2 images/stickers to combine
+│
+│ *Methods:*
+│ 1. Reply image + send another
+│ 2. ${prefix}mix @user1 @user2
+│ 3. Reply sticker + tag user
+│
+│ *Examples:*
+│ ${prefix}mix @user
+│ ${prefix}mix (reply pic + send pic)
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
+    }
+
+    const [buffer1, buffer2] = mediaBuffers
+
+    // 4. GET MIXED IMAGE - UPLOAD FIRST, SHARP FALLBACK
+    const mixBuffer = await fetchMixBuffer(buffer1, buffer2)
+
+    // 5. CONVERT TO STICKER - RAM SAFE
     const sticker = new Sticker(mixBuffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['🔀', '✨'],
+      quality: 70,
+      id: Date.now().toString()
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 8. Send sticker
+    // 6. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 9. React done
+    // 7. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[MIX ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
-    await sock.sendMessage(from, { 
-      text: `> ❌ Failed. Use:.mix\n> Need 2 images: reply + send, or tag 2 users\n> Example:.mix @user1 @user2` 
+      text: `╭─⌈ ❌ *Mix Failed* ⌋
+│ All methods failed
+│ Usage: ${prefix}mix @user1 @user2
+│ Or: Reply image + send image
+│ Aliases: ${prefix}stickermix, ${prefix}merge
+╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
   }
 }

@@ -3,11 +3,12 @@ import { downloadMediaMessage } from '@whiskeysockets/baileys'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import axios from 'axios'
 import { upload } from '../../lib/upload.js'
+import Jimp from 'jimp'
 
 export const name = 'jail'
 export const alias = ['prison', 'bars', 'jail1', 'jail2', 'jail3']
 export const category = 'Sticker'
-export const desc = 'Jail bars effect sticker - 15+ API fallback'
+export const desc = 'Jail bars effect sticker - Upload first, Jimp fallback, RAM safe'
 
 // API LIST - 16 TOTAL 🦁
 const JAIL_APIS = [
@@ -29,59 +30,120 @@ const JAIL_APIS = [
   (url) => `https://api.siputzx.my.id/api/m/jail?url=${encodeURIComponent(url)}`
 ]
 
-async function fetchJailBuffer(imageUrl) {
-  for (let i = 0; i < JAIL_APIS.length; i++) {
-    try {
-      const url = JAIL_APIS[i](imageUrl)
-      const res = await axios.get(url, { 
-        responseType: 'arraybuffer',
-        timeout: 8000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      })
-      
-      if (res.data && res.status === 200) {
-        console.log(` Jail Success API ${i + 1}`)
-        return Buffer.from(res.data)
-      }
-    } catch (err) {
-      console.log(` Jail API ${i + 1} failed: ${err.message}`)
-      continue
-    }
+// JIMP LOCAL FALLBACK - RAM SAFE 0.1MB 🦁
+async function createJailLocal(buffer) {
+  const image = await Jimp.read(buffer)
+  
+  // RAM SAFE: Shrink to 256x256 = ~0.1MB
+  image.resize(256, 256)
+  image.quality(60) // Punguza quality kuokoa RAM
+  
+  // Create jail bars overlay
+  const bars = new Jimp(256, 256, 0x00000000)
+  const barWidth = 10
+  const gap = 30
+  
+  for (let x = 0; x < 256; x += gap) {
+    bars.scan(x, 0, barWidth, 256, function (px, py, idx) {
+      this.bitmap.data[idx + 0] = 60  // R
+      this.bitmap.data[idx + 1] = 60  // G  
+      this.bitmap.data[idx + 2] = 60  // B
+      this.bitmap.data[idx + 3] = 255 // A
+    })
   }
-  throw new Error('All Jail APIs failed')
+  
+  // Add horizontal bars
+  bars.scan(0, 50, 256, 8, function (px, py, idx) {
+    this.bitmap.data[idx + 0] = 60
+    this.bitmap.data[idx + 1] = 60
+    this.bitmap.data[idx + 2] = 60
+    this.bitmap.data[idx + 3] = 255
+  })
+  bars.scan(0, 200, 256, 8, function (px, py, idx) {
+    this.bitmap.data[idx + 0] = 60
+    this.bitmap.data[idx + 1] = 60
+    this.bitmap.data[idx + 2] = 60
+    this.bitmap.data[idx + 3] = 255
+  })
+  
+  image.composite(bars, 0, 0)
+  return await image.getBufferAsync(Jimp.MIME_PNG)
+}
+
+// FETCH: UPLOAD + API FIRST, JIMP FALLBACK
+async function fetchJailBuffer(buffer) {
+  // 1. TRY UPLOAD + APIs FIRST
+  try {
+    console.log('Trying upload + APIs')
+    const imageUrl = await upload(buffer)
+    
+    for (let i = 0; i < JAIL_APIS.length; i++) {
+      try {
+        const url = JAIL_APIS[i](imageUrl)
+        const res = await axios.get(url, { 
+          responseType: 'arraybuffer',
+          timeout: 8000,
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        })
+
+        if (res.data && res.status === 200 && res.data.byteLength > 1000) {
+          console.log(`Jail API ${i + 1} success`)
+          return Buffer.from(res.data)
+        }
+      } catch (err) {
+        console.log(`Jail API ${i + 1} failed: ${err.message}`)
+        continue
+      }
+    }
+  } catch (err) {
+    console.log(`Upload/APIs failed: ${err.message}`)
+  }
+
+  // 2. FALLBACK TO LOCAL JIMP - RAM SAFE
+  console.log('Falling back to local Jimp')
+  return await createJailLocal(buffer)
 }
 
 export default async function jail(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
   try {
-    // 1. Get quoted message or sender
-    const quoted = msg.message?.extendedTextMessage?.contextInfo
-    let targetMsg = msg
+    // 1. ADVANCED EYE LOGIC - viewOnce included
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const mediaMessage = msg.message?.imageMessage || 
+                         msg.message?.stickerMessage ||
+                         quoted?.imageMessage || 
+                         quoted?.stickerMessage ||
+                         quoted?.viewOnceMessageV2?.message?.imageMessage ||
+                         quoted?.viewOnceMessageV2?.message?.stickerMessage ||
+                         quoted?.viewOnceMessage?.message?.imageMessage ||
+                         quoted?.viewOnceMessage?.message?.stickerMessage
+
     let targetJid = msg.key.participant || msg.key.remoteJid
-    
-    if (quoted?.quotedMessage) {
+    let targetMsg = msg
+
+    // 2. SET TARGET IF QUOTED EXISTS
+    if (quoted && (quoted.imageMessage || quoted.stickerMessage || quoted.viewOnceMessageV2 || quoted.viewOnceMessage)) {
+      const quotedInfo = msg.message?.extendedTextMessage?.contextInfo
       targetMsg = { 
-        message: quoted.quotedMessage, 
+        message: quoted, 
         key: { 
           remoteJid: from, 
-          id: quoted.stanzaId, 
-          participant: quoted.participant 
+          id: quotedInfo.stanzaId, 
+          participant: quotedInfo.participant 
         } 
       }
-      targetJid = quoted.participant || quoted.remoteJid
+      targetJid = quotedInfo.participant || quotedInfo.remoteJid || from
     }
 
-    // 2. Check if image/sticker
-    const isImage = targetMsg.message?.imageMessage
-    const isSticker = targetMsg.message?.stickerMessage
-
-    // 3. React processing
+    // 3. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 4. Download media
+    // 4. DOWNLOAD MEDIA OR GET PROFILE PIC
     let buffer
-    if (isImage || isSticker) {
+    if (mediaMessage) {
       buffer = await downloadMediaMessage(
         targetMsg,
         'buffer',
@@ -89,10 +151,9 @@ export default async function jail(sock, { msg, from }, botSettings) {
         { logger: console }
       )
     } else {
-      // Get profile pic kama hakuna image
       try {
         const ppUrl = await sock.profilePictureUrl(targetJid, 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 8000 })
         buffer = Buffer.from(res.data)
       } catch {
         const res = await axios.get('https://i.ibb.co/2dH8p5Z/profile.jpg', { responseType: 'arraybuffer' })
@@ -100,44 +161,51 @@ export default async function jail(sock, { msg, from }, botSettings) {
       }
     }
 
-    if (!buffer) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
+    if (!buffer || buffer.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ❌ *Error* ⌋
+│ Failed to get image
+│ Reply to an image/sticker or tag someone
+│ Usage: ${prefix}jail
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
-    // 5. Upload to get URL
-    const imageUrl = await upload(buffer)
+    // 5. GET JAIL IMAGE - UPLOAD FIRST, JIMP FALLBACK
+    const jailBuffer = await fetchJailBuffer(buffer)
 
-    // 6. Get jail image
-    const jailBuffer = await fetchJailBuffer(imageUrl)
-
-    // 7. Convert to sticker
+    // 6. CONVERT TO STICKER - RAM SAFE
     const sticker = new Sticker(jailBuffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['🔒', '⛓️'],
+      quality: 60, // Punguza quality kuokoa RAM
+      id: Date.now().toString()
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 8. Send sticker
+    // 7. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 9. React done
+    // 8. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[JAIL ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
+      text: `╭─⌈ ❌ *Jail Failed* ⌋
+│ All methods failed
+│ Usage: ${prefix}jail [reply picha/mtu]
+│ Aliases: ${prefix}prison, ${prefix}bars
+╰⊷ *Powered By Bunny Tech*`
+    }, { quoted: msg })
   }
 }

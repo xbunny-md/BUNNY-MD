@@ -1,83 +1,112 @@
 // commands/profile/getstatusviews.js
 export const name = 'getstatusviews'
-export const alias = ['statusviews', 'gsv', 'myviews']
+export const alias = ['statusviews', 'gsv', 'myviews', 'statusinfo']
 export const category = 'Profile'
 export const desc = 'Get details of who viewed and reacted to your statuses'
 
 export default async function getstatusviews(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+  const myJid = sock.user.id
+
   try {
-    // 1. React start - 🌹
+    // 1. REACT START
     await sock.sendMessage(from, {
       react: { text: '🌹', key: msg.key }
     })
 
-    // 2. Fetch your own status
-    const myStatus = await sock.fetchStatus(sock.user.id)
+    // 2. FETCH YOUR STATUS - CORRECT METHOD
+    const statusData = await sock.fetchStatusMessages([myJid])
 
-    if (!myStatus || myStatus.length === 0) {
-      throw new Error('NO_STATUS')
+    if (!statusData || statusData.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ 📭 *No Active Status* ⌋
+│ You have no status in last 24hrs
+│ Post a status first to track views
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
-    // 3. Sort by newest first
-    myStatus.sort((a, b) => b.messageTimestamp - a.messageTimestamp)
+    const statuses = statusData[0].statuses || []
+
+    if (statuses.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ 📭 *No Status* ⌋
+│ No active status found
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
+    }
+
+    // 3. SORT BY NEWEST FIRST
+    statuses.sort((a, b) => b.messageTimestamp - a.messageTimestamp)
 
     let totalViews = 0
     let totalReactions = 0
     let statusReports = []
 
-    // 4. Loop through each status
-    for (let i = 0; i < myStatus.length; i++) {
-      const status = myStatus[i]
+    // 4. LOOP THROUGH EACH STATUS
+    for (let i = 0; i < statuses.length; i++) {
+      const status = statuses[i]
       const statusKey = status.key
 
-      // Get status info
+      // Get time ago
       const timeAgo = Math.floor((Date.now() / 1000 - status.messageTimestamp) / 60)
-      const timeText = timeAgo < 60? `${timeAgo}m ago` : `${Math.floor(timeAgo / 60)}h ago`
+      const timeText = timeAgo < 60? `${timeAgo}m ago` :
+                       timeAgo < 1440? `${Math.floor(timeAgo / 60)}h ago` :
+                       `${Math.floor(timeAgo / 1440)}d ago`
 
       // Get status type
       let statusType = 'Text'
-      if (status.message?.imageMessage) statusType = 'Image'
-      else if (status.message?.videoMessage) statusType = 'Video'
-      else if (status.message?.audioMessage) statusType = 'Audio'
+      let caption = ''
+      if (status.message?.imageMessage) {
+        statusType = 'Image'
+        caption = status.message.imageMessage.caption || ''
+      } else if (status.message?.videoMessage) {
+        statusType = 'Video'
+        caption = status.message.videoMessage.caption || ''
+      } else if (status.message?.audioMessage) {
+        statusType = 'Audio'
+      }
 
-      // Get views - Baileys store
-      const views = await sock.getStatusViewers(statusKey.id)
-      const viewCount = views?.length || 0
+      // Get views - FROM STORE
+      const views = status.readReceipts || []
+      const viewCount = views.length
       totalViews += viewCount
 
-      // Get reactions
+      // Get reactions - FROM STATUS
       const reactions = status.reactions || []
       const reactionCount = reactions.length
       totalReactions += reactionCount
 
-      // Build viewers list
+      // Build viewers list - LIMIT 8
       let viewersList = ''
       if (viewCount > 0) {
         const viewerNames = []
-        for (const viewer of views.slice(0, 10)) { // Limit 10 to avoid spam
+        for (const viewer of views.slice(0, 8)) {
           try {
-            const name = await sock.getName(viewer)
-            viewerNames.push(name || viewer.split('@')[0])
+            const name = await sock.getName(viewer.userJid)
+            viewerNames.push(name || viewer.userJid.split('@')[0])
           } catch {
-            viewerNames.push(viewer.split('@')[0])
+            viewerNames.push(viewer.userJid.split('@')[0])
           }
         }
         viewersList = viewerNames.join(', ')
-        if (viewCount > 10) viewersList += ` +${viewCount - 10} more`
+        if (viewCount > 8) viewersList += ` +${viewCount - 8} more`
       } else {
         viewersList = 'No views yet'
       }
 
-      // Build reactions list
+      // Build reactions list - LIMIT 6
       let reactionsList = ''
       if (reactionCount > 0) {
         const reactionData = []
-        for (const react of reactions.slice(0, 8)) {
+        for (const react of reactions.slice(0, 6)) {
           try {
-            const name = await sock.getName(react.sender)
-            reactionData.push(`${react.text} ${name || react.sender.split('@')[0]}`)
+            const name = await sock.getName(react.key.participant || react.key.remoteJid)
+            reactionData.push(`${react.text} ${name || react.key.participant.split('@')[0]}`)
           } catch {
-            reactionData.push(`${react.text} ${react.sender.split('@')[0]}`)
+            reactionData.push(`${react.text} ${react.key.participant.split('@')[0]}`)
           }
         }
         reactionsList = reactionData.join('\n│ ')
@@ -85,47 +114,60 @@ export default async function getstatusviews(sock, { msg, from }, botSettings) {
         reactionsList = 'No reactions'
       }
 
+      // Add caption preview
+      const captionPreview = caption? `\n│ Caption: ${caption.slice(0, 30)}${caption.length > 30? '...' : ''}` : ''
+
       // Add to reports
-      statusReports.push(`╭─⌈ 📊 *STATUS ${i + 1}* ⌋
-│ Type: ${statusType}
+      statusReports.push(`╭─⌈ 📊 *STATUS ${i + 1}/${statuses.length}* ⌋
+│ Type: ${statusType}${captionPreview}
 │ Time: ${timeText}
 │ Views: ${viewCount}
 │ Reacts: ${reactionCount}
-│ Viewers: ${viewersList}
-│ Reactions:
+│
+│ *Viewers:*
+│ ${viewersList}
+│
+│ *Reactions:*
 │ ${reactionsList}
-╰⊷ *${i + 1}/${myStatus.length}*`)
+╰⊷ *${botSettings.botname || 'BUNNY MD'}*`)
     }
 
-    // 5. Send header with totals
+    // 5. SEND HEADER WITH TOTALS
     const header = `╭─⌈ 🌹 *STATUS ANALYTICS* ⌋
-│ Total Status: ${myStatus.length}
+│ Total Status: ${statuses.length}
 │ Total Views: ${totalViews}
 │ Total Reacts: ${totalReactions}
+│ Avg Views: ${Math.floor(totalViews / statuses.length)}
 │ Generated: ${new Date().toLocaleTimeString()}
-╰⊷ *Powered by Bunny Tech*`
+╰⊷ *Powered By Bunny Tech*`
 
     await sock.sendMessage(from, { text: header }, { quoted: msg })
 
-    // 6. Send each status report - delay to avoid spam
+    // 6. SEND EACH STATUS REPORT - DELAY TO AVOID SPAM
     for (const report of statusReports) {
       await sock.sendMessage(from, { text: report })
-      await new Promise(r => setTimeout(r, 800))
+      await new Promise(r => setTimeout(r, 1000))
     }
 
-    // 7. React done ✅
+    // 7. REACT DONE
     await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
 
   } catch (error) {
     console.error('[GETSTATUSVIEWS ERROR]', error.message)
 
-    if (error.message === 'NO_STATUS') {
-      await sock.sendMessage(from, {
-        text: '> You have no active status in last 24hrs'
-      }, { quoted: msg })
+    let errorMsg = `╭─⌈ ❌ *Error* ⌋
+│ Failed to fetch status data
+│ Make sure you have active status
+╰⊷ *Powered By Bunny Tech*`
+
+    if (error.message.includes('fetchStatusMessages')) {
+      errorMsg = `╭─⌈ ❌ *Feature Unavailable* ⌋
+│ Status tracking not supported
+│ Update Baileys to latest version
+╰⊷ *Powered By Bunny Tech*`
     }
 
-    // React fail ❌
+    await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
     await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
   }
 }

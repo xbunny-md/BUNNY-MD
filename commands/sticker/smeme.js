@@ -4,121 +4,171 @@ import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import sharp from 'sharp'
 
 export const name = 'smeme'
-export const alias = ['stickermeme', 'memesticker']
+export const alias = ['stickermeme', 'memesticker', 'sm']
 export const category = 'Sticker'
-export const desc = 'Add text to sticker meme style'
+export const desc = 'Add text to sticker meme style - Top|Bottom'
 
 export default async function smeme(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
   try {
-    // 1. Get quoted message
-    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
-    
-    if (!quoted) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
-    }
-
-    // 2. Check if sticker
-    const isSticker = quoted.stickerMessage
-    
-    if (!isSticker) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
-    }
-
-    // 3. Get text
+    // 1. GET TEXT FIRST
     const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
     const text = body.trim().split(' ').slice(1).join(' ')
-    
-    if (!text) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
+
+    // 2. ADVANCED STICKER DETECTION - viewOnce included
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const stickerMessage = quoted?.stickerMessage ||
+                           quoted?.viewOnceMessageV2?.message?.stickerMessage ||
+                           quoted?.viewOnceMessage?.message?.stickerMessage
+
+    // 3. HELP IF NO STICKER OR NO TEXT
+    if (!stickerMessage || !text) {
+      await sock.sendMessage(from, { react: { text: '🖼️', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ 🖼️ *Sticker Meme* ⌋
+│ Add top and bottom text to sticker
+│
+│ *Usage:*
+│ Reply to sticker + ${prefix}smeme top|bottom
+│ ${prefix}smeme top text only
+│ ${prefix}smeme |bottom text only
+│
+│ *Examples:*
+│ ${prefix}smeme WHEN YOU|REALIZE
+│ ${prefix}smeme TOP TEXT
+│ ${prefix}smeme |BOTTOM ONLY
+│
+│ *Supports:*
+│ • Static stickers
+│ • ViewOnce stickers
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
-    // 4. React processing
+    // 4. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 5. Download sticker
+    // 5. BUILD TARGET MSG CORRECTLY
+    const quotedInfo = msg.message?.extendedTextMessage?.contextInfo
+    const targetMsg = {
+      message: quoted,
+      key: {
+        remoteJid: from,
+        id: quotedInfo.stanzaId,
+        participant: quotedInfo.participant
+      }
+    }
+
+    // 6. DOWNLOAD STICKER
     const buffer = await downloadMediaMessage(
-      { message: { message: quoted } },
+      targetMsg,
       'buffer',
       {},
       { logger: console }
     )
 
-    if (!buffer) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
+    if (!buffer || buffer.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ❌ *Error* ⌋
+│ Failed to download sticker
+│ Try again or use different sticker
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
-    // 6. Split text for top/bottom
+    // 7. SPLIT TEXT FOR TOP/BOTTOM - SAFE HANDLING
     const [topText, bottomText] = text.split('|')
-    const top = topText?.trim() || ''
-    const bottom = bottomText?.trim() || ''
+    const top = (topText?.trim() || '').slice(0, 50) // Limit 50 chars
+    const bottom = (bottomText?.trim() || '').slice(0, 50)
 
-    // 7. Create meme image
+    if (!top && !bottom) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ❌ *No Text* ⌋
+│ Add text after command
+│ Usage: ${prefix}smeme top|bottom
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
+    }
+
+    // 8. CREATE MEME IMAGE - RAM SAFE
     const image = sharp(buffer)
-    const { width, height } = await image.metadata()
-    
+    const metadata = await image.metadata()
+    const width = metadata.width || 512
+    const height = metadata.height || 512
+
+    // Resize if too large - RAM SAFE
+    if (width > 512 || height > 512) {
+      image.resize(512, 512, { fit: 'inside', withoutEnlargement: true })
+    }
+
+    const finalWidth = Math.min(width, 512)
+    const finalHeight = Math.min(height, 512)
+    const fontSize = Math.max(20, Math.floor(finalWidth / 12))
+    const strokeWidth = Math.max(2, Math.floor(finalWidth / 80))
+
+    // Escape HTML entities
+    const escapeHtml = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
     const svgText = `
-    <svg width="${width}" height="${height}">
+    <svg width="${finalWidth}" height="${finalHeight}">
       <style>
         .text { 
           fill: white; 
-          font-size: ${Math.floor(width / 12)}px; 
-          font-family: Impact, Arial Black, sans-serif; 
+          font-size: ${fontSize}px; 
+          font-family: Impact, 'Arial Black', sans-serif; 
           font-weight: 900;
           text-anchor: middle; 
           stroke: black; 
-          stroke-width: ${Math.floor(width / 100)}px;
+          stroke-width: ${strokeWidth}px;
           paint-order: stroke fill;
         }
       </style>
-      ${top ? `<text x="50%" y="10%" class="text">${top.toUpperCase()}</text>` : ''}
-      ${bottom ? `<text x="50%" y="95%" class="text">${bottom.toUpperCase()}</text>` : ''}
+      ${top ? `<text x="50%" y="${fontSize + 10}" class="text">${escapeHtml(top.toUpperCase())}</text>` : ''}
+      ${bottom ? `<text x="50%" y="${finalHeight - 15}" class="text">${escapeHtml(bottom.toUpperCase())}</text>` : ''}
     </svg>
     `
 
     const memeBuffer = await image
       .composite([{ input: Buffer.from(svgText), top: 0, left: 0 }])
-      .png()
+      .png({ quality: 80, compressionLevel: 9 })
       .toBuffer()
 
-    // 8. Convert to sticker
+    // 9. CONVERT TO STICKER - RAM SAFE
     const sticker = new Sticker(memeBuffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['😂', '🔥'],
+      quality: 70,
+      id: Date.now().toString()
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 9. Send sticker
+    // 10. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 10. React done
+    // 11. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[SMEME ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
+      text: `╭─⌈ ❌ *Smeme Failed* ⌋
+│ ${error.message.includes('download') ? 'Download failed' : 'Processing failed'}
+│ Usage: ${prefix}smeme top|bottom
+│ Example: ${prefix}smeme WHEN|REALIZE
+╰⊷ *Powered By Bunny Tech*`
+    }, { quoted: msg })
   }
 }

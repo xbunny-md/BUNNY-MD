@@ -2,14 +2,53 @@
 import { downloadMediaMessage } from '@whiskeysockets/baileys'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import axios from 'axios'
-import { upload } from '../../lib/upload.js'
+import Jimp from 'jimp'
 
-export const name = 'gay'
+export const name = 'sgay'
 export const alias = ['rainbow', 'pride', 'lgbt', 'gay1']
 export const category = 'Sticker'
-export const desc = 'Rainbow Gay/Pride effect sticker - 15+ API fallback'
+export const desc = 'Rainbow Gay/Pride effect sticker - Local + 16 API fallback'
 
-// API LIST - 16 TOTAL 🦁
+// LOCAL RAINBOW EFFECT - IJITEGEMEE 🦁
+async function createGayLocal(buffer) {
+  const image = await Jimp.read(buffer)
+  const { width, height } = image.bitmap
+  
+  // Resize to square 512x512 for sticker
+  image.resize(512, 512)
+  
+  // Create rainbow overlay
+  const rainbow = new Jimp(512, 512)
+  const colors = [
+    0xFF000080, // Red 50% opacity
+    0xFF7F0080, // Orange 50% opacity  
+    0xFFFF0080, // Yellow 50% opacity
+    0x00FF0080, // Green 50% opacity
+    0x0000FF80, // Blue 50% opacity
+    0x4B008280  // Violet 50% opacity
+  ]
+  
+  const stripeHeight = Math.ceil(512 / colors.length)
+  colors.forEach((color, i) => {
+    rainbow.scan(0, i * stripeHeight, 512, stripeHeight, function (x, y, idx) {
+      this.bitmap.data[idx + 0] = (color >> 24) & 255 // R
+      this.bitmap.data[idx + 1] = (color >> 16) & 255 // G
+      this.bitmap.data[idx + 2] = (color >> 8) & 255  // B
+      this.bitmap.data[idx + 3] = color & 255         // A
+    })
+  })
+  
+  // Composite rainbow over image
+  image.composite(rainbow, 0, 0, {
+    mode: Jimp.BLEND_OVERLAY,
+    opacitySource: 0.5,
+    opacityDest: 1
+  })
+  
+  return await image.getBufferAsync(Jimp.MIME_PNG)
+}
+
+// API LIST - 16 TOTAL - Using Base64 Data URL 🦁
 const GAY_APIS = [
   (url) => `https://some-random-api.com/canvas/gay?avatar=${encodeURIComponent(url)}`,
   (url) => `https://api.popcat.xyz/gay?image=${encodeURIComponent(url)}`,
@@ -29,59 +68,79 @@ const GAY_APIS = [
   (url) => `https://api.siputzx.my.id/api/m/gay?url=${encodeURIComponent(url)}`
 ]
 
-async function fetchGayBuffer(imageUrl) {
+async function fetchGayBuffer(buffer) {
+  // 1. TRY LOCAL FIRST - NO UPLOAD NEEDED
+  try {
+    console.log('Trying local rainbow effect')
+    return await createGayLocal(buffer)
+  } catch (err) {
+    console.log(`Local effect failed: ${err.message}`)
+  }
+
+  // 2. FALLBACK TO APIs using Base64 Data URL
+  const base64 = `data:image/png;base64,${buffer.toString('base64')}`
+  
   for (let i = 0; i < GAY_APIS.length; i++) {
     try {
-      const url = GAY_APIS[i](imageUrl)
+      const url = GAY_APIS[i](base64)
       const res = await axios.get(url, { 
         responseType: 'arraybuffer',
-        timeout: 8000,
+        timeout: 10000,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       })
-      
-      if (res.data && res.status === 200) {
-        console.log(` Gay Success API ${i + 1}`)
+
+      if (res.data && res.status === 200 && res.data.byteLength > 1000) {
+        console.log(`Gay API ${i + 1} success`)
         return Buffer.from(res.data)
       }
     } catch (err) {
-      console.log(` Gay API ${i + 1} failed: ${err.message}`)
+      console.log(`Gay API ${i + 1} failed: ${err.message}`)
       continue
     }
   }
-  throw new Error('All Gay APIs failed')
+  throw new Error('All Gay methods failed')
 }
 
 export default async function gay(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
   try {
-    // 1. Get quoted message or sender
-    const quoted = msg.message?.extendedTextMessage?.contextInfo
-    let targetMsg = msg
+    // 1. ADVANCED EYE LOGIC - viewOnce included
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const mediaMessage = msg.message?.imageMessage || 
+                         msg.message?.stickerMessage ||
+                         quoted?.imageMessage || 
+                         quoted?.stickerMessage ||
+                         quoted?.viewOnceMessageV2?.message?.imageMessage ||
+                         quoted?.viewOnceMessageV2?.message?.stickerMessage ||
+                         quoted?.viewOnceMessage?.message?.imageMessage ||
+                         quoted?.viewOnceMessage?.message?.stickerMessage
+
     let targetJid = msg.key.participant || msg.key.remoteJid
-    
-    if (quoted?.quotedMessage) {
+    let targetMsg = msg
+
+    // 2. SET TARGET IF QUOTED EXISTS
+    if (quoted && (quoted.imageMessage || quoted.stickerMessage || quoted.viewOnceMessageV2 || quoted.viewOnceMessage)) {
+      const quotedInfo = msg.message?.extendedTextMessage?.contextInfo
       targetMsg = { 
-        message: quoted.quotedMessage, 
+        message: quoted, 
         key: { 
           remoteJid: from, 
-          id: quoted.stanzaId, 
-          participant: quoted.participant 
+          id: quotedInfo.stanzaId, 
+          participant: quotedInfo.participant 
         } 
       }
-      targetJid = quoted.participant || quoted.remoteJid
+      targetJid = quotedInfo.participant || quotedInfo.remoteJid || from
     }
 
-    // 2. Check if image/sticker
-    const isImage = targetMsg.message?.imageMessage
-    const isSticker = targetMsg.message?.stickerMessage
-
-    // 3. React processing
+    // 3. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 4. Download media
+    // 4. DOWNLOAD MEDIA OR GET PROFILE PIC
     let buffer
-    if (isImage || isSticker) {
+    if (mediaMessage) {
       buffer = await downloadMediaMessage(
         targetMsg,
         'buffer',
@@ -89,10 +148,9 @@ export default async function gay(sock, { msg, from }, botSettings) {
         { logger: console }
       )
     } else {
-      // Get profile pic kama hakuna image
       try {
         const ppUrl = await sock.profilePictureUrl(targetJid, 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 8000 })
         buffer = Buffer.from(res.data)
       } catch {
         const res = await axios.get('https://i.ibb.co/2dH8p5Z/profile.jpg', { responseType: 'arraybuffer' })
@@ -100,49 +158,51 @@ export default async function gay(sock, { msg, from }, botSettings) {
       }
     }
 
-    if (!buffer) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return await sock.sendMessage(from, { 
-        text: `> ❌ Image not found. Reply picha/sticker au tag mtu\n> Example: .gay` 
+    if (!buffer || buffer.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ❌ *Error* ⌋
+│ Failed to get image
+│ Reply to an image/sticker or tag someone
+│ Usage: ${prefix}gay
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
-    // 5. Upload to get URL
-    const imageUrl = await upload(buffer)
+    // 5. GET GAY IMAGE - LOCAL FIRST, THEN API FALLBACK
+    const gayBuffer = await fetchGayBuffer(buffer)
 
-    // 6. Get gay image
-    const gayBuffer = await fetchGayBuffer(imageUrl)
-
-    // 7. Convert to sticker
+    // 6. CONVERT TO STICKER - RENDER SAFE
     const sticker = new Sticker(gayBuffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['🏳️‍🌈', '🌈'],
+      quality: 80,
+      id: Date.now().toString()
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 8. Send sticker
+    // 7. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 9. React done
+    // 8. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[GAY ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
-    await sock.sendMessage(from, { 
-      text: `> ❌ Failed. Use: .gay [reply picha/mtu]\n> Aliases: .rainbow, .pride, .lgbt` 
+      text: `╭─⌈ ❌ *Gay Failed* ⌋
+│ ${error.message.includes('methods') ? 'All methods failed' : 'Processing failed'}
+│ Usage: ${prefix}gay [reply picha/mtu]
+│ Aliases: ${prefix}rainbow, ${prefix}pride
+╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
   }
 }

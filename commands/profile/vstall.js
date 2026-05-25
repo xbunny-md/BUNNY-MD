@@ -1,24 +1,28 @@
 // commands/profile/vstall.js
 export const name = 'vstall'
-export const alias = ['likall', 'loveall', 'allstatus']
+export const alias = ['likall', 'loveall', 'allstatus', 'vsall']
 export const category = 'Profile'
 export const desc = 'Like ALL contacts statuses with random love emojis or custom emojis'
 
 export default async function vstall(sock, { msg, from, body }, botSettings) {
-  try {
-    const botJid = sock.user?.id
+  const prefix = botSettings.prefix
+  const botJid = sock.user?.id
 
-    // 1. React start - 🧶
+  try {
+    // 1. REACT START
     await sock.sendMessage(from, {
       react: { text: '🧶', key: msg.key }
-    })
+    }).catch(() => {})
 
-    // 2. Parse command: PREFIXvstall EMOJIS only - NO NUMBER
+    // 2. PARSE COMMAND - BRUTE FORCE REGEX
     const commandText = body.trim()
-    const cmdRegex = new RegExp(`^${botSettings.prefix}\\s*vstall\\s*([\\p{Emoji}\\p{Emoji_Presentation}\\p{Emoji_Modifier}\\p{Emoji_Component}\\p{Extended_Pictographic},\\s]*)$`, 'iu')
+    const cmdRegex = new RegExp(
+      `^${prefix}\\s*vstall\\s*([\\p{Emoji}\\p{Emoji_Presentation}\\p{Emoji_Modifier}\\p{Emoji_Component}\\p{Extended_Pictographic},\\s]*)$`,
+      'iu'
+    )
     const match = commandText.match(cmdRegex)
 
-    // 3. Default love emojis - 30 kasoro 💚
+    // 3. DEFAULT LOVE EMOJIS - 30 kasoro 💚
     const defaultEmojis = [
       '❤️','🧡','💛','🤎','🖤','🤍','💙','💜','🩷','❣️',
       '💕','💞','💓','💗','💖','💘','💝','💟','♥️','🫀',
@@ -26,120 +30,177 @@ export default async function vstall(sock, { msg, from, body }, botSettings) {
     ]
 
     let customEmojis = []
-
     if (match) {
       const emojiString = match[1]?.trim()
       if (emojiString) {
         customEmojis = emojiString
-      .split(/[,\s]+/)
-      .map(e => e.trim())
-      .filter(e => /[\p{Emoji}]/u.test(e))
+         .split(/[,\s]+/)
+         .map(e => e.trim())
+         .filter(e => /[\p{Emoji}]/u.test(e))
       }
     }
 
     const emojiPool = customEmojis.length > 0? customEmojis : defaultEmojis
 
-    // 4. FETCH ALL CONTACTS WITH ACTIVE STATUS - RAM FRIENDLY
-    const allStatuses = await sock.fetchStatusUpdates()
+    // 4. GET ALL CONTACTS - BAILEYS 6.7.18 METHOD
+    const contacts = Object.keys(sock.contacts || {})
 
-    if (!allStatuses || allStatuses.length === 0) {
-      throw new Error('NO_STATUS')
+    if (contacts.length === 0) {
+      throw new Error('NO_CONTACTS')
     }
 
-    // 5. Group by user - last 24hrs only, low RAM
-    const now = Math.floor(Date.now() / 1000)
+    // 5. FETCH STATUS FOR EACH CONTACT - BRUTE FORCE WITH RETRY
     const statusByUser = new Map()
+    const now = Math.floor(Date.now() / 1000)
+    let checkedContacts = 0
 
-    for (const status of allStatuses) {
-      if (now - status.messageTimestamp > 86400) continue
+    for (const contactJid of contacts) {
+      // Skip bot and groups
+      if (contactJid === botJid || contactJid.endsWith('@g.us')) continue
 
-      const userJid = status.participant || status.key.participant
-      if (!userJid || userJid === botJid) continue
+      try {
+        // BAILEYS 6.7.18: fetchStatus returns array of status
+        const statuses = await sock.fetchStatus(contactJid)
 
-      if (!statusByUser.has(userJid)) {
-        statusByUser.set(userJid, [])
+        if (statuses && statuses.length > 0) {
+          // Filter last 24hrs only
+          const validStatuses = statuses.filter(s => now - s.messageTimestamp < 86400)
+
+          if (validStatuses.length > 0) {
+            statusByUser.set(contactJid, validStatuses.map(s => s.key))
+          }
+        }
+
+        checkedContacts++
+
+        // Delay every 5 contacts to avoid rate limit
+        if (checkedContacts % 5 === 0) {
+          await new Promise(r => setTimeout(r, 1000))
+        }
+
+        // Memory cleanup every 20 contacts
+        if (checkedContacts % 20 === 0 && global.gc) {
+          global.gc()
+        }
+
+      } catch {
+        continue // Skip if error, brute force continue
       }
-      statusByUser.get(userJid).push(status.key)
     }
 
     if (statusByUser.size === 0) {
       throw new Error('NO_STATUS')
     }
 
-    // 6. Process users one by one - LOW RAM
+    // 6. PROCESS USERS - BRUTE FORCE LOW RAM
     let totalUsers = statusByUser.size
     let totalLiked = 0
     let totalFailed = 0
+    let totalViewed = 0
     let usedEmojis = new Set()
     let processedUsers = 0
+    let skippedUsers = 0
 
     for (const [userJid, statusKeys] of statusByUser) {
       try {
-        // View all first
-        await sock.readMessages(statusKeys.map(key => ({ key })))
+        // View all first - BRUTE FORCE
+        try {
+          await sock.readMessages(statusKeys.map(key => ({ key })))
+          totalViewed += statusKeys.length
+        } catch {}
 
-        // Like each status with random emoji
+        // Like each status with random emoji - BRUTE FORCE RETRY
         for (const key of statusKeys) {
           const randomEmoji = emojiPool[Math.floor(Math.random() * emojiPool.length)]
           usedEmojis.add(randomEmoji)
 
-          try {
-            await sock.sendMessage('status@broadcast', {
-              react: {
-                text: randomEmoji,
-                key: key
-              }
-            })
-            totalLiked++
+          let retries = 3
+          let success = false
 
-            // Random delay 1.8-3.8s - WhatsApp asishtuke
-            await new Promise(r => setTimeout(r, 1800 + Math.random() * 2000))
-          } catch {
-            totalFailed++
+          while (retries > 0 &&!success) {
+            try {
+              await sock.sendMessage('status@broadcast', {
+                react: {
+                  text: randomEmoji,
+                  key: key
+                }
+              })
+              totalLiked++
+              success = true
+            } catch {
+              retries--
+              if (retries === 0) totalFailed++
+              await new Promise(r => setTimeout(r, 1000))
+            }
           }
+
+          // Random delay 1.8-3.8s - WhatsApp safety
+          await new Promise(r => setTimeout(r, 1800 + Math.random() * 2000))
         }
 
         processedUsers++
 
-        // Delay between users 2.5-4.5s - safe kwa RAM na WhatsApp
+        // Delay between users 2.5-4.5s - safe for RAM and WhatsApp
         if (processedUsers < totalUsers) {
           await new Promise(r => setTimeout(r, 2500 + Math.random() * 2000))
         }
 
       } catch {
-        continue // Skip user on error, endelea na wengine
+        skippedUsers++
+        continue // Skip user on error, continue with others
       }
 
-      // Clear memory kila users 10
+      // Memory cleanup every 10 users
       if (processedUsers % 10 === 0 && global.gc) {
         global.gc()
       }
     }
 
-    // 7. Send confirm message - SAME AREA
+    // 7. SEND CONFIRM MESSAGE - DETAILED STATS
+    const successRate = totalUsers > 0? Math.floor((processedUsers / totalUsers) * 100) : 0
+
     const confirmMsg = `╭─⌈ 🧶 *VSTALL COMPLETE* ⌋
 │ Mode: ALL CONTACTS
-│ Users: ${processedUsers}/${totalUsers}
+│ Contacts Checked: ${checkedContacts}
+│ Users With Status: ${totalUsers}
+│ Users Processed: ${processedUsers}
+│ Users Skipped: ${skippedUsers}
+│ Success Rate: ${successRate}%
+│
+│ Status Viewed: ${totalViewed}
 │ Status Liked: ${totalLiked}
-│ Failed: ${totalFailed}
-│ Emojis: ${[...usedEmojis].slice(0, 15).join(' ')}
-│ Type: ${customEmojis.length > 0? 'Custom' : 'Random love 30'}
+│ Failed Likes: ${totalFailed}
+│
+│ Emojis Used: ${[...usedEmojis].slice(0, 15).join(' ')}
+│ Type: ${customEmojis.length > 0? 'Custom' : 'Random Love 30'}
 ╰⊷ *Powered by Bunny Tech*`
 
-    await sock.sendMessage(from, { text: confirmMsg }, { quoted: msg })
+    await sock.sendMessage(from, { text: confirmMsg }, { quoted: msg }).catch(() => {})
 
-    // 8. React done ✅
-    await sock.sendMessage(from, { react: { text: '✅', key: msg.key } })
+    // 8. REACT DONE
+    await sock.sendMessage(from, { react: { text: '✅', key: msg.key } }).catch(() => {})
 
   } catch (error) {
     console.error('[VSTALL ERROR]', error.message)
 
-    let errorMsg = '> Failed to process vstall'
-    if (error.message === 'NO_STATUS') {
-      errorMsg = '> No active status found from your contacts'
+    let errorMsg = `╭─⌈ ❌ *VSTALL FAILED* ⌋
+│ Error: ${error.message}
+│ Try again later
+╰⊷ *Powered by Bunny Tech*`
+
+    if (error.message === 'NO_CONTACTS') {
+      errorMsg = `╭─⌈ ❌ *No Contacts* ⌋
+│ No contacts found in your list
+│ Add contacts first
+╰⊷ *Powered by Bunny Tech*`
+    } else if (error.message === 'NO_STATUS') {
+      errorMsg = `╭─⌈ 📭 *No Status* ⌋
+│ No active status from contacts
+│ Wait for contacts to post status
+╰⊷ *Powered by Bunny Tech*`
     }
 
-    await sock.sendMessage(from, { text: errorMsg }, { quoted: msg })
-    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+    await sock.sendMessage(from, { text: errorMsg }, { quoted: msg }).catch(() => {})
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } }).catch(() => {})
   }
 }

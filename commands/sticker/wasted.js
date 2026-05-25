@@ -29,13 +29,13 @@ async function fetchWastedBuffer(imageUrl) {
         timeout: 10000,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       })
-      
+
       if (res.data && res.status === 200) {
-        console.log(` Wasted Success API ${i + 1}`)
+        console.log(`Wasted API ${i + 1} success`)
         return Buffer.from(res.data)
       }
     } catch (err) {
-      console.log(` Wasted API ${i + 1} failed: ${err.message}`)
+      console.log(`Wasted API ${i + 1} failed: ${err.message}`)
       continue
     }
   }
@@ -43,36 +43,45 @@ async function fetchWastedBuffer(imageUrl) {
 }
 
 export default async function wasted(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
   try {
-    // 1. Get quoted message or sender
-    const quoted = msg.message?.extendedTextMessage?.contextInfo
-    let targetMsg = msg
+    // 1. ADVANCED EYE LOGIC - kama sticker.js
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const mediaMessage = msg.message?.imageMessage || 
+                         msg.message?.stickerMessage ||
+                         quoted?.imageMessage || 
+                         quoted?.stickerMessage ||
+                         quoted?.viewOnceMessageV2?.message?.imageMessage ||
+                         quoted?.viewOnceMessageV2?.message?.stickerMessage ||
+                         quoted?.viewOnceMessage?.message?.imageMessage ||
+                         quoted?.viewOnceMessage?.message?.stickerMessage
+
     let targetJid = msg.key.participant || msg.key.remoteJid
-    
-    if (quoted?.quotedMessage) {
+    let targetMsg = msg
+
+    // 2. SET TARGET IF QUOTED EXISTS
+    if (quoted && (quoted.imageMessage || quoted.stickerMessage || quoted.viewOnceMessageV2 || quoted.viewOnceMessage)) {
+      const quotedInfo = msg.message?.extendedTextMessage?.contextInfo
       targetMsg = { 
-        message: quoted.quotedMessage, 
+        message: quoted, 
         key: { 
           remoteJid: from, 
-          id: quoted.stanzaId, 
-          participant: quoted.participant 
+          id: quotedInfo.stanzaId, 
+          participant: quotedInfo.participant 
         } 
       }
-      targetJid = quoted.participant || quoted.remoteJid
+      targetJid = quotedInfo.participant || quotedInfo.remoteJid || from
     }
 
-    // 2. Check if image/sticker
-    const isImage = targetMsg.message?.imageMessage
-    const isSticker = targetMsg.message?.stickerMessage
-
-    // 3. React processing
+    // 3. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 4. Download media
+    // 4. DOWNLOAD MEDIA OR GET PROFILE PIC
     let buffer
-    if (isImage || isSticker) {
+    if (mediaMessage) {
       buffer = await downloadMediaMessage(
         targetMsg,
         'buffer',
@@ -83,7 +92,7 @@ export default async function wasted(sock, { msg, from }, botSettings) {
       // Get profile pic kama hakuna image
       try {
         const ppUrl = await sock.profilePictureUrl(targetJid, 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 8000 })
         buffer = Buffer.from(res.data)
       } catch {
         const res = await axios.get('https://i.ibb.co/2dH8p5Z/profile.jpg', { responseType: 'arraybuffer' })
@@ -91,44 +100,52 @@ export default async function wasted(sock, { msg, from }, botSettings) {
       }
     }
 
-    if (!buffer) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
+    if (!buffer || buffer.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ❌ *Error* ⌋
+│ Failed to get image
+│ Reply to an image/sticker or tag someone
+│ Usage: ${prefix}wasted
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
-    // 5. Upload to get URL
+    // 5. UPLOAD TO GET URL - hii ndio fix ya render
     const imageUrl = await upload(buffer)
 
-    // 6. Get wasted image
+    // 6. GET WASTED IMAGE FROM API
     const wastedBuffer = await fetchWastedBuffer(imageUrl)
 
-    // 7. Convert to sticker
+    // 7. CONVERT TO STICKER - FIXED FOR RENDER
     const sticker = new Sticker(wastedBuffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['💀', '🔫'],
+      quality: 70
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 8. Send sticker
+    // 8. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 9. React done
+    // 9. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[WASTED ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
+      text: `╭─⌈ ❌ *Wasted Failed* ⌋
+│ ${error.message.includes('API') ? 'All APIs are down' : 'Processing failed'}
+│ Try again later
+╰⊷ *Powered By Bunny Tech*`
+    }, { quoted: msg })
   }
 }

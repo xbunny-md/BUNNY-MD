@@ -1,6 +1,5 @@
 // commands/sticker/tovideo.js
 import { downloadMediaMessage } from '@whiskeysockets/baileys'
-import { webp2mp4 } from '../lib/converter.js'
 
 export const name = 'tovideo'
 export const alias = ['tomp4', 'togif']
@@ -8,43 +7,36 @@ export const category = 'Sticker'
 export const desc = 'Convert animated sticker to video'
 
 export default async function tovideo(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix // DYNAMIC PREFIX
+
   try {
-    // 1. Get quoted message
     const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
-    
-    if (!quoted) {
+    const stickerMessage = msg.message?.stickerMessage || quoted?.stickerMessage
+
+    if (!stickerMessage) {
       await sock.sendMessage(from, {
         react: { text: '❌', key: msg.key }
       })
-      return
+      return await sock.sendMessage(from, {
+        text: 'Reply to a sticker to convert it to video.'
+      }, { quoted: msg })
     }
 
-    // 2. Check if sticker
-    const isSticker = quoted.stickerMessage
-    
-    if (!isSticker) {
+    if (!stickerMessage.isAnimated) {
       await sock.sendMessage(from, {
         react: { text: '❌', key: msg.key }
       })
-      return
+      return await sock.sendMessage(from, {
+        text: `This sticker is not animated. Use ${prefix}toimg for static stickers.`
+      }, { quoted: msg })
     }
 
-    // 3. Check if animated
-    if (!quoted.stickerMessage.isAnimated) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
-    }
-
-    // 4. React processing
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 5. Download sticker
     const buffer = await downloadMediaMessage(
-      { message: { message: quoted } },
+      { message: { stickerMessage } },
       'buffer',
       {},
       { logger: console }
@@ -54,21 +46,18 @@ export default async function tovideo(sock, { msg, from }, botSettings) {
       await sock.sendMessage(from, {
         react: { text: '❌', key: msg.key }
       })
-      return
+      return await sock.sendMessage(from, {
+        text: 'Failed to download sticker.'
+      }, { quoted: msg })
     }
 
-    // 6. Convert webp to mp4
-    const videoBuffer = await webp2mp4(buffer)
-
-    // 7. Send as video
     await sock.sendMessage(from, {
-      video: videoBuffer,
+      video: buffer,
       caption: `╭─⌈ 🎬 *STICKER TO VIDEO* ⌋
 ╰⊷ *Powered By Bunny Tech*`,
       gifPlayback: true
     }, { quoted: msg })
 
-    // 8. React done
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
@@ -78,5 +67,8 @@ export default async function tovideo(sock, { msg, from }, botSettings) {
     await sock.sendMessage(from, {
       react: { text: '❌', key: msg.key }
     })
+    await sock.sendMessage(from, {
+      text: `Error: ${error.message}`
+    }, { quoted: msg })
   }
 }

@@ -1,5 +1,5 @@
 // commands/sticker/stickermix.js
-import { downloadMediaMessage } from '@whiskeysockets/baileys'
+import { downloadMediaMessage, jidNormalizedUser } from '@whiskeysockets/baileys'
 import { Sticker, StickerTypes } from 'wa-sticker-formatter'
 import axios from 'axios'
 import { upload } from '../../lib/upload.js'
@@ -8,7 +8,7 @@ import sharp from 'sharp'
 export const name = 'stickermix'
 export const alias = ['scomb', 'mixsticker', 'emostick']
 export const category = 'Sticker'
-export const desc = 'Mix sticker/image with emoji - 15+ API fallback'
+export const desc = 'Mix sticker/image with emoji - Upload first, Sharp fallback'
 
 // API LIST - 16 TOTAL 🦁
 const STICKERMIX_APIS = [
@@ -36,106 +36,147 @@ function getEmojiUrl(emoji) {
   return `https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72/${code}.png`
 }
 
-async function fetchStickerMixBuffer(imageUrl, emoji) {
-  for (let i = 0; i < STICKERMIX_APIS.length; i++) {
-    try {
-      const url = STICKERMIX_APIS[i](imageUrl, emoji)
-      const res = await axios.get(url, {
-        responseType: 'arraybuffer',
-        timeout: 10000,
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      })
-
-      if (res.data && res.status === 200) {
-        console.log(` StickerMix Success API ${i + 1}`)
-        return Buffer.from(res.data)
-      }
-    } catch (err) {
-      console.log(` StickerMix API ${i + 1} failed: ${err.message}`)
-      continue
-    }
-  }
-  throw new Error('All StickerMix APIs failed')
-}
-
-// Local fallback using sharp - overlay emoji on bottom-right
+// LOCAL FALLBACK USING SHARP - RAM SAFE
 async function localStickerMix(imageBuffer, emoji) {
-  const baseImg = await sharp(imageBuffer).resize(512, 512).toBuffer()
+  const baseImg = await sharp(imageBuffer).resize(512, 512, { fit: 'inside', withoutEnlargement: true }).toBuffer()
+  const metadata = await sharp(baseImg).metadata()
+  const size = Math.min(metadata.width, metadata.height)
+  const emojiSize = Math.floor(size * 0.25) // 25% of image size
 
   try {
     const emojiUrl = getEmojiUrl(emoji)
-    const emojiRes = await axios.get(emojiUrl, { responseType: 'arraybuffer' })
-    const emojiBuffer = await sharp(Buffer.from(emojiRes.data)).resize(128, 128).toBuffer()
+    const emojiRes = await axios.get(emojiUrl, { responseType: 'arraybuffer', timeout: 5000 })
+    const emojiBuffer = await sharp(Buffer.from(emojiRes.data)).resize(emojiSize, emojiSize).toBuffer()
 
     return await sharp(baseImg)
-    .composite([{
+      .composite([{
         input: emojiBuffer,
-        bottom: 10,
-        right: 10
+        bottom: Math.floor(size * 0.02),
+        right: Math.floor(size * 0.02)
       }])
-    .png()
-    .toBuffer()
+      .png({ quality: 80, compressionLevel: 9 })
+      .toBuffer()
   } catch {
     // If emoji fails, return base image
     return baseImg
   }
 }
 
-export default async function stickermix(sock, { msg, from }, botSettings) {
+// FETCH: UPLOAD + API FIRST, SHARP FALLBACK
+async function fetchStickerMixBuffer(buffer, emoji) {
+  // 1. TRY UPLOAD + APIs FIRST
   try {
-    // 1. Get emoji from command
+    console.log('Trying upload + APIs')
+    const imageUrl = await upload(buffer)
+    
+    for (let i = 0; i < STICKERMIX_APIS.length; i++) {
+      try {
+        const url = STICKERMIX_APIS[i](imageUrl, emoji)
+        const res = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        })
+
+        if (res.data && res.status === 200 && res.data.byteLength > 1000) {
+          console.log(`StickerMix API ${i + 1} success`)
+          return Buffer.from(res.data)
+        }
+      } catch (err) {
+        console.log(`StickerMix API ${i + 1} failed: ${err.message}`)
+        continue
+      }
+    }
+  } catch (err) {
+    console.log(`Upload/APIs failed: ${err.message}`)
+  }
+
+  // 2. FALLBACK TO LOCAL SHARP
+  console.log('Falling back to local Sharp')
+  return await localStickerMix(buffer, emoji)
+}
+
+export default async function stickermix(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
+  try {
+    // 1. GET EMOJI FROM COMMAND
     const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
     const args = body.trim().split(' ').slice(1)
 
-    if (args.length < 1) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
+    // 2. ADVANCED MEDIA DETECTION - viewOnce included
+    const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const mediaMessage = msg.message?.imageMessage || 
+                         msg.message?.stickerMessage ||
+                         quoted?.imageMessage || 
+                         quoted?.stickerMessage ||
+                         quoted?.viewOnceMessageV2?.message?.imageMessage ||
+                         quoted?.viewOnceMessageV2?.message?.stickerMessage ||
+                         quoted?.viewOnceMessage?.message?.imageMessage ||
+                         quoted?.viewOnceMessage?.message?.stickerMessage
+
+    // 3. HELP IF NO EMOJI OR NO MEDIA
+    if (args.length < 1 || !mediaMessage) {
+      await sock.sendMessage(from, { react: { text: '😂', key: msg.key } })
       return await sock.sendMessage(from, {
-        text: `> ❌ Please provide 1 emoji!\n> Usage: ${botSettings.prefix}stickermix 😂\n> Reply to image/sticker first\n> Example: ${botSettings.prefix}scomb 🔥`
+        text: `╭─⌈ 😂 *Sticker Mix* ⌋
+│ Mix sticker/image with emoji
+│
+│ *Usage:*
+│ Reply to image/sticker + ${prefix}stickermix <emoji>
+│ ${prefix}scomb 😂
+│ ${prefix}emostick 🔥
+│
+│ *Examples:*
+│ ${prefix}stickermix 😂
+│ ${prefix}scomb 🔥
+│ ${prefix}mixsticker ❤️
+│
+│ *Supports:*
+│ • Images
+│ • Stickers
+│ • ViewOnce media
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
     const emoji = args[0]
     const emojiRegex = /\p{Emoji}/u
     if (!emojiRegex.test(emoji)) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
       return await sock.sendMessage(from, {
-        text: `> ❌ Invalid emoji! Use a real emoji\n> Example: ${botSettings.prefix}stickermix 😂`
+        text: `╭─⌈ ❌ *Invalid Emoji* ⌋
+│ Use a real emoji
+│ Example: ${prefix}stickermix 😂
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
-    // 2. Get quoted message
-    const quoted = msg.message?.extendedTextMessage?.contextInfo
-    let targetMsg = msg
-    let targetJid = msg.key.participant || msg.key.remoteJid
-
-    if (quoted?.quotedMessage) {
-      targetMsg = {
-        message: quoted.quotedMessage,
-        key: {
-          remoteJid: from,
-          id: quoted.stanzaId,
-          participant: quoted.participant
-        }
-      }
-      targetJid = quoted.participant || quoted.remoteJid
-    }
-
-    // 3. Check if image/sticker
-    const isImage = targetMsg.message?.imageMessage
-    const isSticker = targetMsg.message?.stickerMessage
-
-    // 4. React processing
+    // 4. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 5. Download media
+    // 5. BUILD TARGET MSG CORRECTLY
+    let targetMsg = msg
+    let targetJid = msg.key.participant || msg.key.remoteJid
+
+    if (quoted) {
+      const quotedInfo = msg.message?.extendedTextMessage?.contextInfo
+      targetMsg = {
+        message: quoted,
+        key: {
+          remoteJid: from,
+          id: quotedInfo.stanzaId,
+          participant: quotedInfo.participant
+        }
+      }
+      targetJid = quotedInfo.participant || quotedInfo.remoteJid || from
+    }
+
+    // 6. DOWNLOAD MEDIA
     let buffer
-    if (isImage || isSticker) {
+    if (mediaMessage) {
       buffer = await downloadMediaMessage(
         targetMsg,
         'buffer',
@@ -145,8 +186,8 @@ export default async function stickermix(sock, { msg, from }, botSettings) {
     } else {
       // Use profile picture if no image
       try {
-        const ppUrl = await sock.profilePictureUrl(targetJid, 'image')
-        const res = await axios.get(ppUrl, { responseType: 'arraybuffer' })
+        const ppUrl = await sock.profilePictureUrl(jidNormalizedUser(targetJid), 'image')
+        const res = await axios.get(ppUrl, { responseType: 'arraybuffer', timeout: 8000 })
         buffer = Buffer.from(res.data)
       } catch {
         const res = await axios.get('https://i.ibb.co/2dH8p5Z/profile.jpg', { responseType: 'arraybuffer' })
@@ -154,55 +195,50 @@ export default async function stickermix(sock, { msg, from }, botSettings) {
       }
     }
 
-    if (!buffer) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
+    if (!buffer || buffer.length === 0) {
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
       return await sock.sendMessage(from, {
-        text: `> ❌ Image not found. Reply to image/sticker\n> Usage: ${botSettings.prefix}stickermix 😂`
+        text: `╭─⌈ ❌ *Error* ⌋
+│ Image not found
+│ Reply to image/sticker
+╰⊷ *Powered By Bunny Tech*`
       }, { quoted: msg })
     }
 
-    // 6. Upload to get URL
-    const imageUrl = await upload(buffer)
+    // 7. GET MIXED IMAGE - UPLOAD FIRST, SHARP FALLBACK
+    const mixBuffer = await fetchStickerMixBuffer(buffer, emoji)
 
-    // 7. Try API mix first, fallback to local
-    let mixBuffer
-    try {
-      mixBuffer = await fetchStickerMixBuffer(imageUrl, emoji)
-    } catch {
-      console.log(' APIs failed, using local mix')
-      mixBuffer = await localStickerMix(buffer, emoji)
-    }
-
-    // 8. Convert to sticker
+    // 8. CONVERT TO STICKER - RAM SAFE
     const sticker = new Sticker(mixBuffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['😂', '🔥'],
+      quality: 70,
+      id: Date.now().toString()
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 9. Send sticker
+    // 9. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 10. React done
+    // 10. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[STICKERMIX ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
-    await sock.sendMessage(from, {
-      text: `> ❌ Failed. Reply to image/sticker\n> Usage: ${botSettings.prefix}stickermix 😂\n> Example: ${botSettings.prefix}scomb 🔥`
+      text: `╭─⌈ ❌ *StickerMix Failed* ⌋
+│ ${error.message.includes('methods') ? 'All methods failed' : 'Processing failed'}
+│ Usage: ${prefix}stickermix <emoji>
+│ Example: ${prefix}stickermix 😂
+╰⊷ *Powered By Bunny Tech*`
     }, { quoted: msg })
   }
 }

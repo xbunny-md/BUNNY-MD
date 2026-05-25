@@ -5,7 +5,7 @@ import axios from 'axios'
 export const name = 'attp'
 export const alias = ['attp1', 'attp2', 'attp3', 'attp4', 'attp5', 'attp6']
 export const category = 'Sticker'
-export const desc = 'Animated text to sticker - 15+ API fallback'
+export const desc = 'Animated text to sticker - 18+ API fallback'
 
 // API LIST - 18 TOTAL 🦁
 const ATTP_APIS = [
@@ -36,11 +36,11 @@ async function fetchAttpBuffer(text) {
       const url = ATTP_APIS[i](text)
       const res = await axios.get(url, { 
         responseType: 'arraybuffer',
-        timeout: 8000,
+        timeout: 10000,
         headers: { 'User-Agent': 'Mozilla/5.0' }
       })
-      
-      if (res.data && res.status === 200) {
+
+      if (res.data && res.status === 200 && res.data.byteLength > 1000) {
         console.log(`[ATTP] Success API ${i + 1}`)
         return Buffer.from(res.data)
       }
@@ -53,58 +53,85 @@ async function fetchAttpBuffer(text) {
 }
 
 export default async function attp(sock, { msg, from }, botSettings) {
+  const prefix = botSettings.prefix
+
   try {
-    // 1. Get text
+    // 1. GET TEXT
     const body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || ''
     const text = body.trim().split(' ').slice(1).join(' ')
-    
+
+    // 2. HELP IF NO TEXT
     if (!text) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
+      await sock.sendMessage(from, { react: { text: '✨', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ✨ *Animated Text Sticker* ⌋
+│ Create glowing animated text stickers
+│
+│ *Usage:*
+│ ${prefix}attp <text>
+│
+│ *Examples:*
+│ ${prefix}attp Hello
+│ ${prefix}attp Bunny MD
+│
+│ *Limit:* Max 30 characters
+│ *Aliases:* ${prefix}attp1, ${prefix}attp2
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
+    // 3. VALIDATE LENGTH
     if (text.length > 30) {
-      await sock.sendMessage(from, {
-        react: { text: '❌', key: msg.key }
-      })
-      return
+      await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
+      return await sock.sendMessage(from, {
+        text: `╭─⌈ ❌ *Text Too Long* ⌋
+│ Max 30 characters allowed
+│ Your text: ${text.length} chars
+│
+│ Try shorter text
+╰⊷ *Powered By Bunny Tech*`
+      }, { quoted: msg })
     }
 
-    // 2. React processing
+    // 4. REACT PROCESSING
     await sock.sendMessage(from, {
       react: { text: '⏳', key: msg.key }
     })
 
-    // 3. Try all APIs mpaka iwork
+    // 5. TRY ALL APIs MPAKA IWORK
     const buffer = await fetchAttpBuffer(text)
 
-    // 4. Create sticker
+    // 6. CREATE STICKER - RENDER SAFE
     const sticker = new Sticker(buffer, {
       pack: 'BUNNY-MD',
       author: 'Lupin Starnley',
       type: StickerTypes.FULL,
-      categories: ['🤖'],
-      quality: 50
+      categories: ['✨', '🎨'],
+      quality: 80,
+      id: Date.now().toString()
     })
 
     const stickerBuffer = await sticker.toBuffer()
 
-    // 5. Send sticker
+    // 7. SEND STICKER
     await sock.sendMessage(from, {
       sticker: stickerBuffer
     }, { quoted: msg })
 
-    // 6. React done
+    // 8. REACT DONE
     await sock.sendMessage(from, {
       react: { text: '✅', key: msg.key }
     })
 
   } catch (error) {
     console.error('[ATTP ERROR]', error.message)
+    await sock.sendMessage(from, { react: { text: '❌', key: msg.key } })
     await sock.sendMessage(from, {
-      react: { text: '❌', key: msg.key }
-    })
+      text: `╭─⌈ ❌ *ATTP Failed* ⌋
+│ ${error.message.includes('API') ? 'All 18 APIs are down' : 'Processing failed'}
+│ Usage: ${prefix}attp <text>
+│ Example: ${prefix}attp Hello World
+╰⊷ *Powered By Bunny Tech*`
+    }, { quoted: msg })
   }
 }

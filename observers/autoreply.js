@@ -10,6 +10,9 @@ const IGNORE_CHANCE = 0.03
 const TYPO_CHANCE = 0.15
 const CONTEXT_LIMIT = 10
 
+// TRIGGER WORDS - CASE INSENSITIVE
+const TRIGGER_WORDS = ['bunny', 'rabbit', 'hare', 'lupin', 'luis', 'lius']
+
 export default async function autoreply(sock, { msg, from, sender, isGroup }, botSettings) {
   try {
     if (isGroup || msg.key.fromMe) return
@@ -18,11 +21,11 @@ export default async function autoreply(sock, { msg, from, sender, isGroup }, bo
 
     // 1. CHECK IF USER IS ACTIVE
     const { data: activeUser } = await supabase
-    .from('autoreply_active')
-    .select('*')
-    .eq('user_jid', userJid)
-    .eq('is_active', true)
-    .maybeSingle()
+   .from('autoreply_active')
+   .select('*')
+   .eq('user_jid', userJid)
+   .eq('is_active', true)
+   .maybeSingle()
 
     if (!activeUser) return
 
@@ -48,6 +51,16 @@ export default async function autoreply(sock, { msg, from, sender, isGroup }, bo
     if (msgType === 'documentMessage') userContent = '[Document]'
     if (!userContent) userContent = '[Media]'
 
+    // 4.5 TRIGGER CHECK - HII NDIO LOGIC MPYA
+    const hasTriggerWord = TRIGGER_WORDS.some(word =>
+      new RegExp(`\\b${word}\\b`, 'i').test(userContent)
+    )
+
+    if (!hasTriggerWord) {
+      // Kama hajasema Bunny/rabbit/hare/Lupin/Luis/lius, NYAMAZA
+      return
+    }
+
     // 5. LOG USER MESSAGE
     await supabase.from('message_logs').insert({
       user_jid: userJid,
@@ -58,11 +71,11 @@ export default async function autoreply(sock, { msg, from, sender, isGroup }, bo
 
     // 6. FETCH LAST 10 MESSAGES FOR CONTEXT
     const { data: history } = await supabase
-    .from('message_logs')
-    .select('content, is_from_user')
-    .eq('user_jid', userJid)
-    .order('timestamp', { ascending: false })
-    .limit(CONTEXT_LIMIT)
+   .from('message_logs')
+   .select('content, is_from_user')
+   .eq('user_jid', userJid)
+   .order('timestamp', { ascending: false })
+   .limit(CONTEXT_LIMIT)
 
     const contextMessages = history?.reverse().map(h =>
       `${h.is_from_user? 'User' : 'You'}: ${h.content}`
@@ -87,18 +100,18 @@ Rules:
 Reply to this: {user message}`
 
     const fullPrompt = systemPrompt
-    .replace('{last 10 messages}', contextMessages)
-    .replace('{user message}', userContent)
+   .replace('{last 10 messages}', contextMessages)
+   .replace('{user message}', userContent)
 
     // 9. GET ACTIVE AI KEY WITH FALLBACK
     let aiReply = null
     const { data: apiKeys } = await supabase
-    .from('ai_api_keys')
-    .select('*')
-    .eq('is_active', true)
-    .or('rate_limit_until.is.null,rate_limit_until.lt.now()')
-    .lte('error_count', 4)
-    .order('priority', { ascending: true })
+   .from('ai_api_keys')
+   .select('*')
+   .eq('is_active', true)
+   .or('rate_limit_until.is.null,rate_limit_until.lt.now()')
+   .lte('error_count', 4)
+   .order('priority', { ascending: true })
 
     if (!apiKeys || apiKeys.length === 0) {
       aiReply = "nko busy"
@@ -109,12 +122,12 @@ Reply to this: {user message}`
 
           // Update success
           await supabase
-          .from('ai_api_keys')
-          .update({
+         .from('ai_api_keys')
+         .update({
               last_used: new Date().toISOString(),
               error_count: 0
             })
-          .eq('id', key.id)
+         .eq('id', key.id)
 
           break
         } catch (err) {
@@ -123,13 +136,13 @@ Reply to this: {user message}`
           const isRateLimit = err.message.toLowerCase().includes('rate limit') || err.message.includes('429')
 
           await supabase
-          .from('ai_api_keys')
-          .update({
+         .from('ai_api_keys')
+         .update({
               error_count: newErrorCount,
               is_active: newErrorCount > 4? false : true,
               rate_limit_until: isRateLimit? new Date(Date.now() + 3600000).toISOString() : null
             })
-          .eq('id', key.id)
+         .eq('id', key.id)
 
           console.log(`[API FAIL ${key.provider}]`, err.message)
           continue
@@ -142,11 +155,11 @@ Reply to this: {user message}`
     // 10. APPLY TYPO + WORD LIMIT
     if (Math.random() < TYPO_CHANCE) {
       aiReply = aiReply
-      .replace(/\bniko\b/gi, 'nko')
-      .replace(/\bsawa\b/gi, 'xawa')
-      .replace(/\bhivi\b/gi, 'hvi')
-      .replace(/\bkwenye\b/gi, 'kwnye')
-      .replace(/\bnafanya\b/gi, 'nafnya')
+     .replace(/\bniko\b/gi, 'nko')
+     .replace(/\bsawa\b/gi, 'xawa')
+     .replace(/\bhivi\b/gi, 'hvi')
+     .replace(/\bkwenye\b/gi, 'kwnye')
+     .replace(/\bnafanya\b/gi, 'nafnya')
     }
 
     const words = aiReply.split(' ').filter(w => w.length > 0)
@@ -159,8 +172,12 @@ Reply to this: {user message}`
     await sock.sendPresenceUpdate('composing', from)
     await new Promise(r => setTimeout(r, typingTime))
 
-    // 12. SEND REPLY
-    await sock.sendMessage(from, { text: aiReply })
+    // 12. SEND REPLY - NEVER FAIL
+    try {
+      await sock.sendMessage(from, { text: aiReply })
+    } catch (sendErr) {
+      console.log('[AUTOREPLY SEND FAIL]', sendErr.message)
+    }
 
     // 13. UPDATE STATS
     await supabase.from('autoreply_active').update({
@@ -176,11 +193,12 @@ Reply to this: {user message}`
     })
 
   } catch (err) {
-    console.log('[AUTOREPLY ERROR]', err.message)
+    // NEVER FAIL OBSERVER
+    console.log('[AUTOREPLY CRITICAL ERROR]', err.message)
   }
 }
 
-// REAL API CALLS FOR ALL PROVIDERS
+// REAL API CALLS FOR ALL PROVIDERS - SAME AS YOURS
 async function callAIProvider(provider, apiKey, prompt) {
   try {
     // 1. GEMINI
